@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadUUID</key>
+	<string>662FEAE3-A06D-4FE2-BE9C-996443573DF8</string>
+	<key>PayloadIdentifier</key>
+	<string>com.example.profile.webclip-demo</string>
+	<key>PayloadDisplayName</key>
+	<string>内网门户图标</string>
+	<key>PayloadOrganization</key>
+	<string>示例科技有限公司</string>
+	<key>PayloadDescription</key>
+	<string>在桌面添加内网门户入口</string>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.webClip.managed</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadIdentifier</key>
+			<string>com.example.webclip.portal</string>
+			<key>PayloadUUID</key>
+			<string>7C8E05D8-E9B2-405E-932A-FE0CA61BAE43</string>
+			<key>PayloadDisplayName</key>
+			<string>内网门户</string>
+			<key>PayloadOrganization</key>
+			<string>示例科技有限公司</string>
+			<key>Label</key>
+			<string>内网门户</string>
+			<key>URL</key>
+			<string>https://portal.example.com</string>
+			<key>IsRemovable</key>
+			<false/>
+			<key>FullScreen</key>
+			<true/>
+		</dict>
+	</array>
+</dict>
+</plist>

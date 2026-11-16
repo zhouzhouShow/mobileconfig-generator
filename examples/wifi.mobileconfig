@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadUUID</key>
+	<string>782C59F5-85C6-4622-BF9C-8C8F1C9A1993</string>
+	<key>PayloadIdentifier</key>
+	<string>com.example.profile.wifi-demo</string>
+	<key>PayloadDisplayName</key>
+	<string>公司 Wi-Fi 配置</string>
+	<key>PayloadOrganization</key>
+	<string>示例科技有限公司</string>
+	<key>PayloadDescription</key>
+	<string>自动连接公司无线网络</string>
+	<key>ConsentText</key>
+	<dict>
+		<key>default</key>
+		<string>本描述文件由 IT 部门提供，用于连接公司 Wi-Fi。</string>
+	</dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.wifi.managed</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadIdentifier</key>
+			<string>com.example.wifi.corp</string>
+			<key>PayloadUUID</key>
+			<string>75027234-1079-4467-9319-2FF488750BA2</string>
+			<key>PayloadDisplayName</key>
+			<string>公司 Wi-Fi</string>
+			<key>PayloadOrganization</key>
+			<string>示例科技有限公司</string>
+			<key>SSID_STR</key>
+			<string>Corp-WiFi</string>
+			<key>EncryptionType</key>
+			<string>WPA2</string>
+			<key>Password</key>
+			<string>Passw0rd!2026</string>
+			<key>HIDDEN_NETWORK</key>
+			<true/>
+			<key>ProxyType</key>
+			<string>None</string>
+		</dict>
+	</array>
+</dict>
+</plist>

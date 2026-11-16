@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selfcheck:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # 只跑无界面自检；ui_check.py 需要可交互桌面，云端 runner 不保证，故不在这里执行。
+      # 如需自动发布 exe：再执行 python build.py，并用 softprops/action-gh-release 上传 dist/*.exe，
+      # 同时给 job 加上 permissions: contents: write。
+      - name: Run selfcheck
+        run: python tests/selfcheck.py

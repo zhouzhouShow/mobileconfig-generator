@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadUUID</key>
+	<string>AAD48B32-D47C-48A5-B7E5-1BBBA698F360</string>
+	<key>PayloadIdentifier</key>
+	<string>com.example.profile.restrictions-demo</string>
+	<key>PayloadDisplayName</key>
+	<string>教室 iPad 限制策略</string>
+	<key>PayloadOrganization</key>
+	<string>示例中学</string>
+	<key>PayloadDescription</key>
+	<string>禁用相机、FaceTime 与 App 安装，并强制 8 位密码</string>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.applicationaccess</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadIdentifier</key>
+			<string>com.example.restrictions.classroom</string>
+			<key>PayloadUUID</key>
+			<string>268D5BDF-80EA-4BE7-A25F-FAD9557AE415</string>
+			<key>PayloadDisplayName</key>
+			<string>教室 iPad 限制</string>
+			<key>PayloadOrganization</key>
+			<string>示例中学</string>
+			<key>allowCamera</key>
+			<false/>
+			<key>allowFaceTime</key>
+			<false/>
+			<key>allowSafari</key>
+			<true/>
+			<key>allowAppInstallation</key>
+			<false/>
+			<key>allowAppRemoval</key>
+			<false/>
+			<key>allowInAppPurchases</key>
+			<true/>
+			<key>allowVoiceDialing</key>
+			<true/>
+			<key>allowiTunes</key>
+			<true/>
+			<key>allowMusicService</key>
+			<true/>
+			<key>allowCloudDocumentSync</key>
+			<true/>
+			<key>allowAirPrint</key>
+			<true/>
+			<key>allowAssistant</key>
+			<true/>
+			<key>allowScreenShot</key>
+			<true/>
+			<key>allowAccountModification</key>
+			<true/>
+			<key>allowOTAPKIUpdates</key>
+			<true/>
+			<key>allowEnterpriseAppTrust</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.mobiledevice.passwordpolicy</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadIdentifier</key>
+			<string>com.example.restrictions.classroom.passwordpolicy</string>
+			<key>PayloadUUID</key>
+			<string>EBECE81C-94C3-4A4C-87B1-105B3BDDF9CD</string>
+			<key>PayloadDisplayName</key>
+			<string>教室 iPad 限制 - 密码策略</string>
+			<key>PayloadOrganization</key>
+			<string>示例中学</string>
+			<key>allowSimple</key>
+			<false/>
+			<key>forcePIN</key>
+			<true/>
+			<key>requireAlphanumeric</key>
+			<false/>
+			<key>minLength</key>
+			<integer>8</integer>
+			<key>minComplexChars</key>
+			<integer>1</integer>
+			<key>maxFailedAttempts</key>
+			<integer>10</integer>
+		</dict>
+	</array>
+</dict>
+</plist>
