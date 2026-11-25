@@ -104,8 +104,10 @@ ui_check 覆盖：图标数据写回、导出 plist 的 `Icon` 为原始 PNG 字
 ## 7. 仓库与发布状态
 
 - 已 `git init`，分支 `main`，工作区干净，MIT 协议，带 `ci.yml`
-- **尚未推送到 GitHub**
+- 已推送到 GitHub：<https://github.com/zhouzhouShow/mobileconfig-generator>（public）
+- 本机直连 `github.com:443` 不通，push 需走代理：`git -c http.proxy=http://127.0.0.1:10808 push`
 - `dist/` 不入库：exe 与使用说明文档都不在仓库里，需要时重新 `python build.py` 生成
+- 本地证书目录 `签名文件/` 已在 `.gitignore` 中忽略（内含签名私钥，严禁入库）
 - 硬编码检查已做：全仓无本机绝对路径/用户名/临时目录，OpenSSL 路径全部由 `shutil.which` 与环境变量拼接
 
 推送方式：

@@ -90,7 +90,8 @@ def find_openssl(preferred: str = "") -> str:
 def openssl_version(exe: str) -> str:
     try:
         res = subprocess.run([exe, "version"], capture_output=True, text=True,
-                             timeout=20, creationflags=CREATE_NO_WINDOW)
+                             timeout=20, creationflags=CREATE_NO_WINDOW,
+                             errors="replace")
         return (res.stdout or res.stderr).strip()
     except Exception:
         return ""
@@ -99,7 +100,7 @@ def openssl_version(exe: str) -> str:
 def _run(args: list, password: str = "") -> str:
     try:
         res = subprocess.run(args, capture_output=True, text=True, timeout=180,
-                             creationflags=CREATE_NO_WINDOW)
+                             creationflags=CREATE_NO_WINDOW, errors="replace")
     except FileNotFoundError as exc:
         raise OpenSSLNotFound(f"无法启动 OpenSSL：{args[0]}") from exc
     except subprocess.TimeoutExpired as exc:
@@ -111,15 +112,89 @@ def _run(args: list, password: str = "") -> str:
     return log
 
 
-def _export_from_p12(openssl: str, p12_path: str, password: str, workdir: str):
-    cert_pem = os.path.join(workdir, "signer_cert.pem")
-    key_pem = os.path.join(workdir, "signer_key.pem")
+CONVERT_PS = r"""param([string]$src, [string]$pwd, [string]$out, [string]$newpwd)
+$ErrorActionPreference = 'Stop'
+try {
+    $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+        $src, $pwd, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+    $b = $c.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $newpwd)
+    [IO.File]::WriteAllBytes($out, $b)
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+"""
+
+
+def _powershell() -> str:
+    for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def convert_pkcs12_legacy(p12_path: str, password: str, out_path: str,
+                          new_password: str, workdir: str = "") -> str:
+    """用 Windows 自带的 .NET 重新导出一份 p12。
+
+    有些工具（含 Windows 证书导出向导）用 RC2-40 加密 p12，OpenSSL 3 默认不带 legacy
+    provider 时会报 "RC2-40-CBC unsupported"。这里借助 .NET 的证书 API 读入后以较新的
+    算法重新导出，OpenSSL 就能正常解开。
+    """
+    ps = _powershell()
+    if not ps:
+        raise SignError("没有找到 PowerShell，无法转换旧式加密的 p12。"
+                        "请改用 .pem 证书 + 私钥，或重新导出为 AES 加密的 p12。")
+    own_dir = not workdir
+    workdir = workdir or tempfile.mkdtemp(prefix="mcps_")
+    try:
+        script = os.path.join(workdir, "convert_p12.ps1")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(CONVERT_PS)
+        try:
+            res = subprocess.run(
+                [ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                 "-File", script, "-src", p12_path, "-pwd", password or "",
+                 "-out", out_path, "-newpwd", new_password],
+                capture_output=True, text=True, timeout=120,
+                creationflags=CREATE_NO_WINDOW, errors="replace")
+        except subprocess.TimeoutExpired as exc:
+            raise SignError("转换 p12 超时") from exc
+        if res.returncode != 0 or not os.path.isfile(out_path):
+            detail = (res.stderr or res.stdout or "").strip()
+            if password:
+                detail = detail.replace(password, "******")
+            raise SignError("无法读取该 p12（密码错误或文件损坏），OpenSSL 与系统转换都失败了",
+                            detail)
+        return out_path
+    finally:
+        if own_dir:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _p12_to_pem(openssl: str, p12_path: str, password: str,
+                cert_pem: str, key_pem: str) -> None:
     passin = "pass:" + password
     _run([openssl, "pkcs12", "-in", p12_path, "-clcerts", "-nokeys",
           "-out", cert_pem, "-passin", passin], password)
     _run([openssl, "pkcs12", "-in", p12_path, "-nocerts", "-nodes",
           "-out", key_pem, "-passin", passin], password)
-    return cert_pem, key_pem
+
+
+def _export_from_p12(openssl: str, p12_path: str, password: str, workdir: str):
+    cert_pem = os.path.join(workdir, "signer_cert.pem")
+    key_pem = os.path.join(workdir, "signer_key.pem")
+    try:
+        _p12_to_pem(openssl, p12_path, password, cert_pem, key_pem)
+        return cert_pem, key_pem
+    except SignError:
+        # 旧式 RC2-40 加密：先转换一份 OpenSSL 能读的 p12 再试
+        converted = os.path.join(workdir, "converted.p12")
+        new_pwd = "mcsign-temp"
+        convert_pkcs12_legacy(p12_path, password, converted, new_pwd, workdir)
+        _p12_to_pem(openssl, converted, new_pwd, cert_pem, key_pem)
+        return cert_pem, key_pem
 
 
 def extract_signed_content(raw: bytes, openssl: str = "") -> bytes:

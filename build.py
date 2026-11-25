@@ -26,6 +26,7 @@ def main() -> int:
         "--hidden-import", "app.profile",
         "--hidden-import", "app.ui",
         "--hidden-import", "app.signing",
+        "--hidden-import", "app.certinfo",
         "--hidden-import", "tkinterdnd2",
         # tkinterdnd2 会带上 tkdnd 的 DLL/tcl 脚本，必须一并收集才能拖拽
         "--collect-all", "tkinterdnd2",

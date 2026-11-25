@@ -245,6 +245,8 @@ class MainWindow(_TK_BASE):
         menubar.add_cascade(label="文件", menu=m_file)
 
         m_tool = tk.Menu(menubar, tearoff=0, font=FONT)
+        m_tool.add_command(label="查看证书信息 / 备案指纹…", command=self.open_certinfo)
+        m_tool.add_separator()
         m_tool.add_command(label="检测 OpenSSL 环境", command=self.detect_openssl)
         m_tool.add_command(label="设置 OpenSSL 路径…", command=self.pick_openssl)
         menubar.add_cascade(label="工具", menu=m_tool)
@@ -274,6 +276,8 @@ class MainWindow(_TK_BASE):
                    command=self.export_unsigned).pack(side="left", padx=6)
         ttk.Button(bar, text="签名并导出", style="Tool.TButton",
                    command=self.open_sign_dialog).pack(side="left", padx=6)
+        ttk.Button(bar, text="证书信息", style="Tool.TButton",
+                   command=self.open_certinfo).pack(side="left", padx=(6, 0))
 
         self.openssl_label = ttk.Label(bar, text="", style="Help.TLabel")
         self.openssl_label.pack(side="right")
@@ -1050,6 +1054,9 @@ class MainWindow(_TK_BASE):
     def open_sign_dialog(self):
         SignDialog(self)
 
+    def open_certinfo(self):
+        CertInfoDialog(self)
+
     def detect_openssl(self):
         preferred = load_settings().get("openssl_path", "")
         try:
@@ -1246,6 +1253,129 @@ class SignDialog(tk.Toplevel):
             parent=self)
         self.app.status.configure(text=f"已签名导出 {out}", foreground="#137333")
         self.destroy()
+
+
+class CertInfoDialog(tk.Toplevel):
+    """读取 Android / Apple 证书，提取 APP 备案需要的指纹与公钥。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.results = []
+        self.title("证书信息 / 备案指纹")
+        self.geometry("780x660")
+        self.minsize(700, 560)
+        self.transient(app)
+        self.configure(bg=BG)
+
+        self.var_path = tk.StringVar()
+        self.var_pwd = tk.StringVar()
+
+        ttk.Label(self, text="选择 Android（.keystore / .jks）或 Apple（.p12 / .pfx / .cer）证书",
+                  style="Head.TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        ttk.Label(self,
+                  text="读取后可获得备案常用的 MD5、SHA-1、SHA-256 指纹与公钥；"
+                       "Android 一般填 SHA-1 / MD5 指纹 + 公钥，iOS 一般填公钥 + Bundle ID。",
+                  style="Help.TLabel", wraplength=740, justify="left").pack(anchor="w", padx=14, pady=(0, 8))
+
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=14, pady=4)
+        ttk.Label(row, text="证书文件", width=10, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row, textvariable=self.var_path).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="浏览…", width=7, command=self._browse).pack(side="left", padx=(6, 0))
+
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=14, pady=4)
+        ttk.Label(row, text="密码", width=10, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row, textvariable=self.var_pwd, show="*").pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="读取证书信息", command=self._load).pack(side="left", padx=(6, 0))
+
+        self.status = ttk.Label(self, text="", style="Help.TLabel")
+        self.status.pack(anchor="w", padx=14, pady=(2, 4))
+
+        box = ttk.Frame(self)
+        box.pack(fill="both", expand=True, padx=14)
+        self.text = tk.Text(box, wrap="word", font=FONT_MONO, bg="#fbfbfc",
+                            relief="flat", padx=8, pady=6)
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=sb.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", padx=14, pady=10)
+        for label, key in [("复制全文", "all"), ("复制 SHA-1", "sha1"),
+                           ("复制 MD5", "md5"), ("复制 SHA-256", "sha256"),
+                           ("复制公钥", "public_key_b64")]:
+            ttk.Button(btns, text=label,
+                       command=lambda k=key: self._copy(k)).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
+
+    def _browse(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="选择证书文件",
+            filetypes=[("证书文件", "*.p12;*.pfx;*.keystore;*.jks;*.cer;*.crt;*.der;*.pem"),
+                       ("所有文件", "*.*")])
+        if path:
+            self.var_path.set(path)
+
+    def _load(self):
+        path = self.var_path.get().strip()
+        if not path:
+            messagebox.showwarning(APP_TITLE, "请先选择证书文件。", parent=self)
+            return
+        self.status.configure(text="正在读取…", foreground="#1f4e79")
+        self.update_idletasks()
+        try:
+            from . import certinfo
+            results, note = certinfo.read_certificates(path, self.var_pwd.get())
+        except Exception as exc:  # noqa: BLE001
+            self.status.configure(text="读取失败", foreground="#c5221f")
+            messagebox.showerror(APP_TITLE, f"读取证书失败：\n{exc}", parent=self)
+            return
+        self.results = results
+        tip = f"（{note}）" if note else ""
+        self.status.configure(text=f"已读取 {len(results)} 张证书{tip}", foreground="#137333")
+        self._show(results)
+
+    def _show(self, results):
+        lines = []
+        for idx, info in enumerate(results, 1):
+            title = "签名证书" if idx == 1 else f"证书链第 {idx} 张"
+            lines.append(f"===== {title} =====")
+            lines.append(f"主题 Subject：{info.get('subject', '')}")
+            lines.append(f"颁发者 Issuer：{info.get('issuer', '')}")
+            lines.append(f"序列号 Serial：{info.get('serial', '')}")
+            lines.append(f"生效时间：{info.get('not_before', '')}")
+            lines.append(f"失效时间：{info.get('not_after', '')}")
+            lines.append(f"MD5 指纹：{info.get('md5', '')}")
+            lines.append(f"SHA-1 指纹：{info.get('sha1', '')}")
+            lines.append(f"SHA-256 指纹：{info.get('sha256', '')}")
+            alg = info.get("key_alg", "")
+            bits = info.get("key_bits", "")
+            lines.append(f"公钥算法：{alg}{(' ' + bits + ' 位') if bits else ''}")
+            lines.append(f"签名算法：{info.get('sig_alg', '')}")
+            lines.append(f"公钥（Base64）：{info.get('public_key_b64', '')}")
+            lines.append(f"证书（Base64 DER）：{info.get('cert_b64', '')}")
+            lines.append("")
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", "\n".join(lines))
+        self.text.configure(state="disabled")
+
+    def _copy(self, key: str):
+        if not self.results:
+            messagebox.showinfo(APP_TITLE, "请先读取证书。", parent=self)
+            return
+        if key == "all":
+            payload = self.text.get("1.0", "end-1c")
+        else:
+            payload = "\n".join(str(i.get(key, "")) for i in self.results if i.get(key))
+        if not payload.strip():
+            return
+        self.clipboard_clear()
+        self.clipboard_append(payload)
+        self.status.configure(text="已复制到剪贴板", foreground="#137333")
 
 
 class HelpDialog(tk.Toplevel):

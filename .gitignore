@@ -32,3 +32,10 @@ tmp/
 *.log
 *.tmp
 .screenshots/
+
+# 本地证书与私钥（严禁入库）
+签名文件/
+*.p12
+*.pfx
+*.keystore
+*.jks
