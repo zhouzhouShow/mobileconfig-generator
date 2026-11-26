@@ -322,8 +322,11 @@ _HINTS = (
     ("lock manager", "iTMSTransporter 缓存被占用：请关闭其他 Transporter 窗口或命令行实例后重试；"
                      "仍失败时用“复制命令”在 cmd 中手动执行"),
     ("client configuration failed",
-     "认证失败：Key ID、Issuer ID 与 .p8 需来自同一把 App Store Connect API 密钥；"
-     "若走代理，请确认代理允许访问 Apple 的上传域名"),
+     "认证失败：请确认 Key ID、Issuer ID 与 .p8 来自同一把密钥，且“密钥类型”"
+     "（团队 / 个人）与生成时一致；若走代理，请确认代理允许访问 Apple 的上传域名"),
+    ("private key",
+     "找不到或无法读取私钥：请检查 Key ID 是否填对，以及密钥类型是否选错"
+     "（团队密钥文件名前缀为 AuthKey_，个人密钥为 ApiKey_）"),
     ("entered incorrectly", "Apple ID 或密码不正确：请先在 appleid.apple.com 生成“应用专用密码”，"
                             "不要填 Apple ID 登录密码"),
     ("app-specific password", "需要使用“应用专用密码”：在 appleid.apple.com → 登录与安全 中生成"),

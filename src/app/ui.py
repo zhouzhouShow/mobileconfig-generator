@@ -2225,7 +2225,11 @@ class UploadDialog(tk.Toplevel):
         tail = "\n".join(self._log_tail[-8:])
         hint = U.friendly_error(tail + "\n" + error) or error or "请查看日志中的错误信息"
         self._set_status("上传失败", DANGER)
-        messagebox.showerror("上传失败", hint, parent=self)
+        detail = "\n".join(self._log_tail[-6:]).strip()
+        message = hint
+        if detail and detail not in message:
+            message += "\n\n日志末尾：\n" + detail
+        messagebox.showerror("上传失败", message, parent=self)
 
     def _on_close(self):
         if self._worker is not None:
