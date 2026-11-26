@@ -11,6 +11,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
@@ -2388,7 +2389,7 @@ class UpdateDialog(tk.Toplevel):
         self.pb = ttk.Progressbar(self, mode="determinate", maximum=100)
         self.lbl_status = tk.Label(self, text="", bg=SURFACE, fg=INK_MUTED, font=FONT_SM)
         self.lbl_status.pack(anchor="w", padx=18)
-        tk.Label(self, text="若一直停在“下载中”，多为网络无法访问 GitHub，"
+        tk.Label(self, text="若一直停在“下载中”，多为网络无法访问 GitHub 或速度极慢，"
                            "可关闭本窗口后用「打开发布页」手动下载。",
                  bg=SURFACE, fg=INK_MUTED, font=FONT_SM,
                  wraplength=600, justify="left").pack(anchor="w", padx=18, pady=(2, 0))
@@ -2405,6 +2406,7 @@ class UpdateDialog(tk.Toplevel):
 
         self._cancelled = False
         self._dest = ""
+        self._t0 = 0.0
 
     def _close(self):
         self._cancelled = True
@@ -2436,6 +2438,7 @@ class UpdateDialog(tk.Toplevel):
         dest = os.path.join(tempfile.gettempdir(),
                             info.get("asset_name") or "AppleProfileTool_update.exe")
         self._dest = dest
+        self._t0 = time.time()
 
         def work():
             try:
@@ -2452,6 +2455,7 @@ class UpdateDialog(tk.Toplevel):
 
     def _poll_download(self):
         if not self.winfo_exists():
+            self._cancelled = True      # 窗口已销毁：让后台线程尽快停止写入
             return
         finished = False
         try:
@@ -2473,14 +2477,18 @@ class UpdateDialog(tk.Toplevel):
     def _on_progress(self, done, total):
         if self._cancelled:
             return
+        # GitHub 在国内常见只有几十 KB/s，显示速度才能区分“在下载”和“真卡住”
+        elapsed = max(time.time() - self._t0, 0.001)
+        kb = done / elapsed / 1024
+        speed = f"{kb / 1024:.1f} MB/s" if kb >= 1024 else f"{kb:.0f} KB/s"
         if total:
             percent = int(done * 100 / total)
             self.pb["value"] = percent
             self._set_status(
-                f"正在下载… {done / 1048576:.1f} MB / {total / 1048576:.1f} MB（{percent}%）",
-                ACCENT_DARK)
+                f"正在下载… {done / 1048576:.1f} MB / {total / 1048576:.1f} MB"
+                f"（{percent}%）· {speed}", ACCENT_DARK)
         else:
-            self._set_status(f"正在下载… {done / 1048576:.1f} MB", ACCENT_DARK)
+            self._set_status(f"正在下载… {done / 1048576:.1f} MB · {speed}", ACCENT_DARK)
 
     def _download_failed(self, message):
         if self._cancelled or not self.winfo_exists():
