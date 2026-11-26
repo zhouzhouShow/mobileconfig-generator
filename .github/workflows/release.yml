@@ -33,9 +33,17 @@ jobs:
       - name: Build exe
         run: python build.py
 
+      - name: Rename release asset
+        shell: pwsh
+        run: |
+          # GitHub 会丢弃非 ASCII 资产名（中文名会变成 Apple.exe），发布时统一用英文名
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          Move-Item $exe.FullName "dist/AppleProfileTool.exe" -Force
+          Get-ChildItem dist
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: dist/AppleProfileTool.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

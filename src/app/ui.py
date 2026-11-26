@@ -128,8 +128,13 @@ class MainWindow(_TK_BASE):
         self._dnd_map = {}
 
         self.title(APP_TITLE)
-        self.geometry("1440x880")
-        self.minsize(1180, 720)
+        # 窗口尺寸按屏幕可用区域收敛，避免在小屏 / 高缩放下大于桌面导致无法拖回
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        win_w, win_h = min(1440, max(1024, screen_w - 80)), min(880, max(680, screen_h - 140))
+        pos_x = max(0, (screen_w - win_w) // 2)
+        pos_y = max(0, (screen_h - win_h) // 3)
+        self.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
+        self.minsize(1024, 680)
         self.configure(bg=BG)
 
         self._init_style()
@@ -145,6 +150,55 @@ class MainWindow(_TK_BASE):
         if initial:
             self.open_path(initial)
         self.after(2500, self._auto_check_update)
+        # Win+D / 最小化后偶发无法恢复：窗口重新映射时校正位置并前置
+        self._mapped_once = False
+        self.bind("<Map>", self._on_window_map, add="+")
+
+    # ------------------------------------------------------------- 窗口恢复
+    def _on_window_map(self, event):
+        if event.widget is not self:
+            return
+        if not self._mapped_once:
+            self._mapped_once = True
+            return
+        if self.state() == "iconic":
+            self.after(60, self._restore_window)
+        else:
+            self._restore_window()
+
+    def _restore_window(self):
+        try:
+            self.deiconify()
+            self._ensure_on_screen()
+            for child in self.winfo_children():
+                if isinstance(child, tk.Toplevel) and child.winfo_exists():
+                    if not child.winfo_viewable():
+                        child.deiconify()
+                        child.lift()
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(180, self._drop_topmost)
+        except tk.TclError:
+            pass
+
+    def _drop_topmost(self):
+        try:
+            self.attributes("-topmost", False)
+        except tk.TclError:
+            pass
+
+    def _ensure_on_screen(self):
+        """窗口被恢复到屏幕外时，把标题栏移回可见区域。"""
+        self.update_idletasks()
+        if self.state() == "zoomed":
+            return
+        x, y = self.winfo_x(), self.winfo_y()
+        width = self.winfo_width()
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        new_x = min(max(x, 200 - width), screen_w - 200)
+        new_y = min(max(y, 0), screen_h - 120)
+        if (new_x, new_y) != (x, y):
+            self.geometry(f"+{new_x}+{new_y}")
 
     # ------------------------------------------------------------------ 拖拽
     def _setup_drop(self):

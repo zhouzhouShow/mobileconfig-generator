@@ -39,7 +39,7 @@
 
 ### 方式一：直接使用 exe
 
-1. 在仓库的 **Releases** 页面下载 `Apple描述文件生成器.exe`（单文件，无需安装）。
+1. 在仓库的 **Releases** 页面下载 `AppleProfileTool.exe`（发布用英文文件名，单文件，无需安装；下载后可自行改名）。
 2. 双击运行。首次启动会自动检查更新；签名功能需要本机有 OpenSSL（见下文“签名”）。
 3. 需要签名时，建议把 `openssl.exe` 及其 DLL 放到 exe 同级的 `tools\openssl\` 目录（便携版 zip 已自带）。
 
