@@ -10,6 +10,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NAME = "Apple描述文件生成器"
+# 交给 PyInstaller 的名字必须是纯 ASCII：Windows CI 的控制台编码会把中文名截成 "Apple"
+BUILD_NAME = "AppleProfileTool"
 
 
 def main() -> int:
@@ -21,7 +23,7 @@ def main() -> int:
     args = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onefile", "--windowed",
-        "--name", NAME,
+        "--name", BUILD_NAME,
         "--paths", "src",
         "--hidden-import", "app.profile",
         "--hidden-import", "app.ui",
@@ -40,6 +42,7 @@ def main() -> int:
         print("打包失败")
         return code
     exe = os.path.join("dist", NAME + ".exe")
+    os.replace(os.path.join("dist", BUILD_NAME + ".exe"), exe)
     print(f"\n打包完成：{exe}（{os.path.getsize(exe) / 1024 / 1024:.1f} MB）")
     return 0
 
