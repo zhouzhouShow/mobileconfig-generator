@@ -1836,6 +1836,7 @@ class UploadDialog(tk.Toplevel):
         except Exception:  # noqa: BLE001
             saved_password = ""
         self.var_password = tk.StringVar(value=saved_password)
+        self.var_app_id = tk.StringVar(value=saved.get("asc_app_id", ""))
         self.var_team = tk.StringVar(value=saved.get("asc_team_id", ""))
 
         tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
@@ -1883,15 +1884,22 @@ class UploadDialog(tk.Toplevel):
                                  font=FONT_SM, anchor="w")
         self.lbl_info.grid(row=1, column=1, sticky="w")
 
-        row_label(form, "认证方式", 2)
+        row_label(form, "App 数字 ID", 2)
+        app_box = tk.Frame(form, bg=SURFACE)
+        app_box.grid(row=2, column=1, sticky="ew", pady=5)
+        ttk.Entry(app_box, textvariable=self.var_app_id, width=18).pack(side="left")
+        tk.Label(app_box, text="App Store Connect → App 信息 → Apple ID（10 位数字，Windows 上传必填）",
+                 bg=SURFACE, fg=INK_MUTED, font=FONT_SM).pack(side="left", padx=(10, 0))
+
+        row_label(form, "认证方式", 3)
         auth_box = ttk.Combobox(form, textvariable=self.var_auth, state="readonly",
                                 values=[self.AUTH_API_LABEL, self.AUTH_ACCOUNT_LABEL])
-        auth_box.grid(row=2, column=1, sticky="w", pady=5)
+        auth_box.grid(row=3, column=1, sticky="w", pady=5)
         auth_box.bind("<<ComboboxSelected>>", self._on_auth_change)
 
         # ---- API Key 面板 ----
         self.frm_api = tk.Frame(form, bg=SURFACE)
-        self.frm_api.grid(row=3, column=0, columnspan=2, sticky="ew")
+        self.frm_api.grid(row=4, column=0, columnspan=2, sticky="ew")
         self.frm_api.columnconfigure(1, weight=1)
         row_label(self.frm_api, "密钥类型", 0)
         ttk.Combobox(self.frm_api, textvariable=self.var_kind, state="readonly",
@@ -1909,7 +1917,7 @@ class UploadDialog(tk.Toplevel):
 
         # ---- Apple ID 面板 ----
         self.frm_account = tk.Frame(form, bg=SURFACE)
-        self.frm_account.grid(row=4, column=0, columnspan=2, sticky="ew")
+        self.frm_account.grid(row=5, column=0, columnspan=2, sticky="ew")
         self.frm_account.columnconfigure(1, weight=1)
         row_label(self.frm_account, "Apple ID", 0)
         ttk.Entry(self.frm_account, textvariable=self.var_apple_id).grid(
@@ -1933,9 +1941,9 @@ class UploadDialog(tk.Toplevel):
                                     style="Ghost.TButton", command=self._load_teams)
         self.btn_teams.pack(side="left", padx=(6, 0))
 
-        row_label(form, "iTMSTransporter", 5)
+        row_label(form, "iTMSTransporter", 6)
         exe_box = tk.Frame(form, bg=SURFACE)
-        exe_box.grid(row=5, column=1, sticky="ew", pady=5)
+        exe_box.grid(row=6, column=1, sticky="ew", pady=5)
         ttk.Entry(exe_box, textvariable=self.var_exe).pack(
             side="left", fill="x", expand=True)
         ttk.Button(exe_box, text="自动检测", width=8, style="Ghost.TButton",
@@ -2049,6 +2057,7 @@ class UploadDialog(tk.Toplevel):
             "asc_auth": U.AUTH_ACCOUNT if account else U.AUTH_API,
             "asc_apple_id": self.var_apple_id.get().strip(),
             "asc_team_id": self.var_team.get().strip(),
+            "asc_app_id": self.var_app_id.get().strip(),
         })
         if account:
             data["asc_password"] = (base64.b64encode(password.encode("utf-8")).decode("ascii")
@@ -2155,7 +2164,8 @@ class UploadDialog(tk.Toplevel):
                 messagebox.showinfo("复制命令", "请先填写 Apple ID", parent=self)
                 return
             cmd = U.manual_command(exe, ipa, auth=U.AUTH_ACCOUNT, apple_id=apple_id,
-                                   team_id=self.var_team.get().strip())
+                                   team_id=self.var_team.get().strip(),
+                                   app_id=self.var_app_id.get().strip())
         else:
             key = self.var_key.get().strip()
             key_id = self.var_key_id.get().strip()
@@ -2168,7 +2178,8 @@ class UploadDialog(tk.Toplevel):
                 messagebox.showerror("复制命令", str(exc), parent=self)
                 return
             prefix = f'cd /d "{workspace}"\r\n'
-            cmd = U.manual_command(exe, ipa, key_id, self.var_issuer.get().strip(), kind)
+            cmd = U.manual_command(exe, ipa, key_id, self.var_issuer.get().strip(), kind,
+                                   app_id=self.var_app_id.get().strip())
         self.clipboard_clear()
         self.clipboard_append(f"{prefix}{cmd}\r\n")
         self._set_status("命令已复制，粘贴到命令提示符即可手动上传", SUCCESS)
@@ -2196,6 +2207,16 @@ class UploadDialog(tk.Toplevel):
 
         account = self.var_auth.get() == self.AUTH_ACCOUNT_LABEL
         key = key_id = issuer = apple_id = password = team = ""
+        app_id = self.var_app_id.get().strip()
+        if not app_id.isdigit():
+            messagebox.showwarning(
+                "缺少 App 数字 ID",
+                "Windows 版 iTMSTransporter 不能自行分析 ipa，需要 App 的数字 ID。\n\n"
+                "获取方式：App Store Connect → 你的 App →「App 信息」→ 右侧「Apple ID」"
+                "（10 位纯数字，例如 6448311069）。\n"
+                "已上架的 App 也可以从 App Store 链接 apps.apple.com/…/id6448311069 里取。",
+                parent=self)
+            return
         kind = "individual" if self.var_kind.get() == self.KIND_SELF else "team"
         if account:
             apple_id = self.var_apple_id.get().strip()
@@ -2237,7 +2258,8 @@ class UploadDialog(tk.Toplevel):
                     lambda s: self._queue.put(("log", s)),
                     self._cancel.is_set,
                     auth=U.AUTH_ACCOUNT if account else U.AUTH_API,
-                    apple_id=apple_id, password=password, team_id=team)
+                    apple_id=apple_id, password=password, team_id=team,
+                    app_id=app_id)
                 self._queue.put(("done", code))
             except U.UploadError as exc:
                 self._queue.put(("error", str(exc)))

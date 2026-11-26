@@ -135,15 +135,41 @@ def ipa_info(path: str) -> dict:
         "version": info.get("CFBundleShortVersionString", ""),
         "build": str(info.get("CFBundleVersion", "")),
         "min_os": info.get("MinimumOSVersion", ""),
+        "platform": _platform_of(info),
         "size": os.path.getsize(path),
     }
+
+
+def _platform_of(info: dict) -> str:
+    """把 Info.plist 里的平台信息映射成 Transporter 的 -platform 取值。"""
+    raw = " ".join([str(info.get("DTPlatformName") or "")]
+                   + [str(x) for x in (info.get("CFBundleSupportedPlatforms") or [])]).lower()
+    if "xros" in raw or "vision" in raw:
+        return "visionos"
+    if "appletv" in raw:
+        return "appletvos"
+    if "macos" in raw:
+        return "macos"
+    return "ios"
 
 
 # --------------------------------------------------------------------- 上传
 def _upload_args(ipa: str, auth: str, key_id: str, issuer: str, key_type: str,
                  apple_id: str, password: str, team_id: str,
-                 verbosity: str = "informational") -> list:
+                 verbosity: str = "informational", bundle: dict = None,
+                 app_id: str = "") -> list:
     args = ["-m", "upload", "-assetFile", ipa]
+    # Windows / Linux 上 Transporter 无法分析 ipa（swinfo 只有 macOS 版），
+    # 必须显式给出数字 App ID、版本号与平台，它才会跳过分析直接上传
+    if app_id:
+        args += ["-apple_id", app_id]
+    if bundle:
+        if bundle.get("version"):
+            args += ["-bundle_short_version", bundle["version"]]
+        if bundle.get("build"):
+            args += ["-bundle_version", bundle["build"]]
+        if bundle.get("platform"):
+            args += ["-platform", bundle["platform"]]
     if auth == AUTH_ACCOUNT:
         args += ["-u", apple_id]
         if password:
@@ -161,9 +187,10 @@ def _upload_args(ipa: str, auth: str, key_id: str, issuer: str, key_type: str,
 def build_command(exe: str, ipa: str, key_id: str = "", issuer: str = "",
                   key_type: str = "team", auth: str = AUTH_API,
                   apple_id: str = "", password: str = "",
-                  team_id: str = "", verbosity: str = "informational") -> list:
+                  team_id: str = "", verbosity: str = "informational",
+                  bundle: dict = None, app_id: str = "") -> list:
     args = _upload_args(ipa, auth, key_id, issuer, key_type,
-                        apple_id, password, team_id, verbosity)
+                        apple_id, password, team_id, verbosity, bundle, app_id)
     if exe.lower().endswith((".cmd", ".bat")):
         return ["cmd.exe", "/c", exe] + args
     return [exe] + args
@@ -171,9 +198,15 @@ def build_command(exe: str, ipa: str, key_id: str = "", issuer: str = "",
 
 def manual_command(exe: str, ipa: str, key_id: str = "", issuer: str = "",
                    key_type: str = "team", auth: str = AUTH_API,
-                   apple_id: str = "", team_id: str = "") -> str:
+                   apple_id: str = "", team_id: str = "",
+                   app_id: str = "") -> str:
     """给用户复制到命令行的等价命令（排障用，账号模式不写入密码）。"""
-    args = _upload_args(ipa, auth, key_id, issuer, key_type, apple_id, "", team_id)
+    try:
+        bundle = ipa_info(ipa)
+    except UploadError:
+        bundle = None
+    args = _upload_args(ipa, auth, key_id, issuer, key_type, apple_id, "",
+                        team_id, bundle=bundle, app_id=app_id)
     parts = [f'"{exe}"']
     for item in args:
         parts.append(f'"{item}"' if " " in item else item)
@@ -248,7 +281,7 @@ def _run_capture(cmd: list, cwd: str, log=None, should_stop=None):
 def run_upload(exe: str, ipa: str, key_id: str = "", issuer: str = "",
                key_path: str = "", key_type: str = "team", log=None,
                should_stop=None, auth: str = AUTH_API, apple_id: str = "",
-               password: str = "", team_id: str = "") -> int:
+               password: str = "", team_id: str = "", app_id: str = "") -> int:
     """执行上传，日志逐行回调。返回退出码，0 表示成功。"""
     if not os.path.isfile(ipa):
         raise UploadError("ipa 文件不存在：" + ipa)
@@ -273,9 +306,13 @@ def run_upload(exe: str, ipa: str, key_id: str = "", issuer: str = "",
 
     def run_once(verbosity):
         cmd = build_command(exe, ipa, key_id, issuer, key_type, auth,
-                            apple_id, password, team_id, verbosity)
+                            apple_id, password, team_id, verbosity, bundle, app_id)
         return _run_capture(cmd, workspace, log, should_stop)
 
+    try:
+        bundle = ipa_info(ipa)
+    except UploadError as exc:
+        raise UploadError(f"无法读取 ipa 信息：{exc}")
     try:
         code, lines = run_once("informational")
         # Client configuration failed 只有一句笼统提示，用详细日志重跑一次才能拿到真实原因
@@ -352,6 +389,9 @@ def list_providers(exe: str, apple_id: str, password: str,
 
 # --------------------------------------------------------------------- 错误翻译
 _HINTS = (
+    ("software analysis",
+     "Windows 版 Transporter 不能自行分析 ipa：需要在「App 数字 ID」里填 App Store Connect "
+     "里的 10 位 Apple ID（App 信息页可查），新版会自动补上版本号与平台。"),
     ("lock manager", "iTMSTransporter 缓存被占用：请关闭其他 Transporter 窗口或命令行实例后重试；"
                      "仍失败时用“复制命令”在 cmd 中手动执行"),
     ("client configuration failed",

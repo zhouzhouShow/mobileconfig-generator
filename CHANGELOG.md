@@ -1,5 +1,16 @@
 # 更新记录
 
+## 1.1.7
+
+### 修复
+
+- 修复 Windows 上传 ipa 报 `Unable to perform software analysis on Windows`：Windows 版
+  iTMSTransporter 内置的分析工具 swinfo 只有 macOS 版本，必须显式提供 App 数字 ID、
+  版本号与平台。现在会自动从 ipa 读取版本号、Build 号与平台，配合新增的「App 数字 ID」
+  生成 `-apple_id -bundle_short_version -bundle_version -platform`，跳过分析直接上传
+- 上传窗口新增「App 数字 ID」输入框（App Store Connect → App 信息 → Apple ID，10 位数字），
+  保存后自动复用；未填写时给出获取路径提示，复制命令也带上这些参数
+
 ## 1.1.6
 
 ### 修复
