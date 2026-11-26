@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -90,24 +92,46 @@ def check(current: str, timeout: int = 12):
     }
 
 
-def download(url: str, dest: str, progress=None) -> str:
-    """下载更新包，progress 回调接收 0~100（未知总长时为 -1）。"""
+def download(url: str, dest: str, progress=None, should_stop=None) -> str:
+    """下载更新包。
+
+    progress(done_bytes, total_bytes) 用于界面显示，total 为 0 表示长度未知；
+    should_stop() 返回 True 时中止下载。
+    """
     request = urllib.request.Request(url, headers={"User-Agent": "AppleProfileTool"})
+    started = time.time()
     try:
-        with urllib.request.urlopen(request, timeout=30) as response, \
+        with urllib.request.urlopen(request, timeout=20) as response, \
                 open(dest, "wb") as fh:
             total = int(response.headers.get("Content-Length") or 0)
             done = 0
             while True:
+                if should_stop and should_stop():
+                    raise UpdateError("已取消下载")
                 chunk = response.read(64 * 1024)
                 if not chunk:
                     break
                 fh.write(chunk)
                 done += len(chunk)
                 if progress:
-                    progress(int(done * 100 / total) if total else -1)
+                    progress(done, total)
+                # 极慢网络保护：30 分钟仍未完成就放弃，提示手动下载
+                if time.time() - started > 1800:
+                    raise UpdateError("下载超过 30 分钟仍未完成。\n"
+                                      "请关闭本窗口，点「打开发布页」手动下载 exe 覆盖。")
+    except UpdateError:
+        raise
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise UpdateError("更新包不存在（HTTP 404），可能该版本已删除，请到发布页手动下载")
+        raise UpdateError(f"下载失败：HTTP {exc.code}")
+    except (socket.timeout, TimeoutError):
+        raise UpdateError("下载超时：网络无法稳定连接 GitHub 下载服务器。\n"
+                          "请关闭本窗口，点「打开发布页」手动下载 exe 覆盖。")
     except Exception as exc:  # noqa: BLE001
         raise UpdateError(f"下载失败：{exc}")
+    if os.path.getsize(dest) <= 0:
+        raise UpdateError("下载内容为空，请重试或手动下载")
     return dest
 
 

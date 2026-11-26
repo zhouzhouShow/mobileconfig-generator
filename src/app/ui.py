@@ -2388,6 +2388,10 @@ class UpdateDialog(tk.Toplevel):
         self.pb = ttk.Progressbar(self, mode="determinate", maximum=100)
         self.lbl_status = tk.Label(self, text="", bg=SURFACE, fg=INK_MUTED, font=FONT_SM)
         self.lbl_status.pack(anchor="w", padx=18)
+        tk.Label(self, text="若一直停在“下载中”，多为网络无法访问 GitHub，"
+                           "可关闭本窗口后用「打开发布页」手动下载。",
+                 bg=SURFACE, fg=INK_MUTED, font=FONT_SM,
+                 wraplength=600, justify="left").pack(anchor="w", padx=18, pady=(2, 0))
 
         btns = tk.Frame(self, bg=SURFACE)
         btns.pack(fill="x", padx=18, pady=12)
@@ -2399,7 +2403,11 @@ class UpdateDialog(tk.Toplevel):
         ttk.Button(btns, text="打开发布页", style="Ghost.TButton",
                    command=lambda: webbrowser.open(info["page"])).pack(side="left")
 
+        self._cancelled = False
+        self._dest = ""
+
     def _close(self):
+        self._cancelled = True
         self.destroy()
         try:
             self.app.grab_set()
@@ -2424,14 +2432,16 @@ class UpdateDialog(tk.Toplevel):
 
         self.btn_install.configure(state="disabled", text="下载中…")
         self.pb.pack(fill="x", padx=18, pady=(2, 6))
-        self._set_status("正在下载更新…", ACCENT_DARK)
+        self._set_status("正在连接 GitHub…（可关闭窗口取消）", ACCENT_DARK)
         dest = os.path.join(tempfile.gettempdir(),
                             info.get("asset_name") or "AppleProfileTool_update.exe")
+        self._dest = dest
 
         def work():
             try:
                 UP.download(info["asset_url"], dest,
-                            lambda pct: self._q.put(("pct", pct)))
+                            lambda done, total: self._q.put(("pct", (done, total))),
+                            should_stop=lambda: self._cancelled)
             except UP.UpdateError as exc:
                 self._q.put(("err", str(exc)))
             else:
@@ -2441,34 +2451,57 @@ class UpdateDialog(tk.Toplevel):
         self.after(150, self._poll_download)
 
     def _poll_download(self):
+        if not self.winfo_exists():
+            return
+        finished = False
         try:
             while True:
                 kind, payload = self._q.get_nowait()
                 if kind == "pct":
-                    self._on_progress(payload)
+                    self._on_progress(*payload)
                 elif kind == "err":
                     self._download_failed(payload)
+                    finished = True
                 else:
                     self._download_done(payload)
+                    finished = True
         except queue.Empty:
             pass
-        if self.btn_install.cget("state") == "disabled":
+        if not finished and self.btn_install.cget("state") == "disabled":
             self.after(150, self._poll_download)
 
-    def _on_progress(self, pct):
-        if pct < 0:
-            self._set_status("正在下载更新…", ACCENT_DARK)
+    def _on_progress(self, done, total):
+        if self._cancelled:
             return
-        self.pb["value"] = pct
-        self._set_status(f"正在下载更新… {pct}%", ACCENT_DARK)
+        if total:
+            percent = int(done * 100 / total)
+            self.pb["value"] = percent
+            self._set_status(
+                f"正在下载… {done / 1048576:.1f} MB / {total / 1048576:.1f} MB（{percent}%）",
+                ACCENT_DARK)
+        else:
+            self._set_status(f"正在下载… {done / 1048576:.1f} MB", ACCENT_DARK)
 
     def _download_failed(self, message):
+        if self._cancelled or not self.winfo_exists():
+            try:
+                if self._dest and os.path.exists(self._dest):
+                    os.remove(self._dest)
+            except OSError:
+                pass
+            return
         self.pb.pack_forget()
         self.btn_install.configure(state="normal", text="立即更新")
         self._set_status("下载失败", DANGER)
         messagebox.showerror("更新失败", message, parent=self)
 
     def _download_done(self, path):
+        if self._cancelled or not self.winfo_exists():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return
         self.pb["value"] = 100
         self._set_status("下载完成，正在替换并重启…", SUCCESS)
         try:
