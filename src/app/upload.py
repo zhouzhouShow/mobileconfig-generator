@@ -141,7 +141,8 @@ def ipa_info(path: str) -> dict:
 
 # --------------------------------------------------------------------- 上传
 def _upload_args(ipa: str, auth: str, key_id: str, issuer: str, key_type: str,
-                 apple_id: str, password: str, team_id: str) -> list:
+                 apple_id: str, password: str, team_id: str,
+                 verbosity: str = "informational") -> list:
     args = ["-m", "upload", "-assetFile", ipa]
     if auth == AUTH_ACCOUNT:
         args += ["-u", apple_id]
@@ -153,16 +154,16 @@ def _upload_args(ipa: str, auth: str, key_id: str, issuer: str, key_type: str,
             args += ["-asc_provider", team_id]
     else:
         args += ["-apiKey", key_id, "-apiIssuer", issuer, "-apiKeyType", key_type]
-    args += ["-v", "informational", "-WONoPause", "true"]
+    args += ["-v", verbosity, "-WONoPause", "true"]
     return args
 
 
 def build_command(exe: str, ipa: str, key_id: str = "", issuer: str = "",
                   key_type: str = "team", auth: str = AUTH_API,
                   apple_id: str = "", password: str = "",
-                  team_id: str = "") -> list:
+                  team_id: str = "", verbosity: str = "informational") -> list:
     args = _upload_args(ipa, auth, key_id, issuer, key_type,
-                        apple_id, password, team_id)
+                        apple_id, password, team_id, verbosity)
     if exe.lower().endswith((".cmd", ".bat")):
         return ["cmd.exe", "/c", exe] + args
     return [exe] + args
@@ -202,9 +203,26 @@ def persist_key_dir(key_path: str, key_id: str, key_type: str) -> str:
         return _copy_key(tempfile.mkdtemp(prefix="asc_keys_"), key_path, key_id, key_type)
 
 
+def _decode(raw: bytes) -> str:
+    """iTMSTransporter（JDK 21）输出 UTF-8，中文 Windows 的 ANSI 编码是 cp936，
+    直接按系统编码解码会让中文路径变成乱码，所以优先按 UTF-8 解。"""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # Python 3.12 在 UTF-8 模式下 locale 也返回 utf-8，这里显式回退到 Windows ANSI
+    for encoding in ("mbcs", locale.getpreferredencoding(False)):
+        if not encoding:
+            continue
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _run_capture(cmd: list, cwd: str, log=None, should_stop=None):
     """执行命令并逐行回调，返回 (退出码, 全部输出行)。"""
-    encoding = locale.getpreferredencoding(False) or "utf-8"
     lines = []
     proc = subprocess.Popen(
         cmd,
@@ -219,7 +237,7 @@ def _run_capture(cmd: list, cwd: str, log=None, should_stop=None):
         if should_stop and should_stop():
             proc.terminate()
             break
-        line = raw.decode(encoding, errors="replace").rstrip()
+        line = _decode(raw).rstrip()
         if line:
             lines.append(line)
             if log:
@@ -234,7 +252,12 @@ def run_upload(exe: str, ipa: str, key_id: str = "", issuer: str = "",
     """执行上传，日志逐行回调。返回退出码，0 表示成功。"""
     if not os.path.isfile(ipa):
         raise UploadError("ipa 文件不存在：" + ipa)
-    log = log or (lambda line: None)
+    raw_log = log or (lambda line: None)
+
+    def log(line):   # 日志可能被贴到群里排障，先把密码抹掉
+        if password and password in line:
+            line = line.replace(password, "***")
+        raw_log(line)
 
     if auth == AUTH_ACCOUNT:
         if not apple_id:
@@ -248,10 +271,20 @@ def run_upload(exe: str, ipa: str, key_id: str = "", issuer: str = "",
         workspace = _copy_key(tempfile.mkdtemp(prefix="asc_upload_"),
                               key_path, key_id, key_type)
 
-    cmd = build_command(exe, ipa, key_id, issuer, key_type,
-                        auth, apple_id, password, team_id)
+    def run_once(verbosity):
+        cmd = build_command(exe, ipa, key_id, issuer, key_type, auth,
+                            apple_id, password, team_id, verbosity)
+        return _run_capture(cmd, workspace, log, should_stop)
+
     try:
-        code, _ = _run_capture(cmd, workspace, log, should_stop)
+        code, lines = run_once("informational")
+        # Client configuration failed 只有一句笼统提示，用详细日志重跑一次才能拿到真实原因
+        if code != 0 and not (should_stop and should_stop()) and \
+                any("client configuration failed" in x.lower() for x in lines):
+            log("")
+            log("首次上传失败（Client configuration failed），"
+                "正在用详细日志重试以获取具体原因…")
+            code, _ = run_once("detailed")
         return code
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -344,8 +377,15 @@ _HINTS = (
 )
 
 
-def friendly_error(text: str) -> str:
+def friendly_error(text: str, auth: str = "") -> str:
     low = (text or "").lower()
+    # 账号模式的这条报错与 API Key 模式原因不同，单独给出排查顺序
+    if "client configuration failed" in low and auth == AUTH_ACCOUNT:
+        return ("Apple ID 已登录，但 Apple 拒绝下发上传配置。请依次检查：\n"
+                "1. 账号属于多个团队时必须先「获取团队」并选中正确的团队；\n"
+                "2. 账号角色需为 Admin / App Manager（账号持有人或管理员）；\n"
+                "3. App Store Connect →「协议、税务和银行业务」中同意最新协议；\n"
+                "4. 网络需能访问 contentdelivery.itunes.apple.com（代理常拦截）。")
     for key, hint in _HINTS:
         if key in low:
             return hint

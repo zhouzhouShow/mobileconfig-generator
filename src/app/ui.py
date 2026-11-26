@@ -1923,7 +1923,7 @@ class UploadDialog(tk.Toplevel):
                             font=FONT_SM, cursor="hand2")
         pwd_link.pack(side="left", padx=(8, 0))
         pwd_link.bind("<Button-1>", lambda e: AppPasswordDialog(self))
-        row_label(self.frm_account, "团队（可选）", 2)
+        row_label(self.frm_account, "团队", 2)
         team_box = tk.Frame(self.frm_account, bg=SURFACE)
         team_box.grid(row=2, column=1, sticky="ew", pady=5)
         self.cmb_team = ttk.Combobox(team_box, textvariable=self.var_team, values=[])
@@ -1947,7 +1947,7 @@ class UploadDialog(tk.Toplevel):
 
         tk.Label(self, text="API Key 模式：私钥按 AuthKey_<KeyID>.p8 复制到临时目录，上传结束自动删除。"
                             "Apple ID 模式：需使用应用专用密码（不是登录密码），密码仅在本次上传时传给"
-                            " iTMSTransporter，不会被保存。",
+                            " iTMSTransporter，不会被保存；账号属于多个团队时请先「获取团队」并选中团队。",
                  bg=SURFACE, fg=INK_MUTED, font=FONT_SM, justify="left",
                  wraplength=760).pack(anchor="w", padx=18, pady=(4, 8))
 
@@ -2111,7 +2111,7 @@ class UploadDialog(tk.Toplevel):
         self.btn_teams.configure(text="获取团队", state="normal")
         if error:
             self._set_status("获取团队失败", DANGER)
-            hint = U.friendly_error(error) or error
+            hint = U.friendly_error(error, U.AUTH_ACCOUNT) or error
             messagebox.showerror("获取团队", hint, parent=self)
             return
         if not teams:
@@ -2278,7 +2278,8 @@ class UploadDialog(tk.Toplevel):
                 parent=self)
             return
         tail = "\n".join(self._log_tail[-8:])
-        hint = U.friendly_error(tail + "\n" + error) or error or "请查看日志中的错误信息"
+        auth = U.AUTH_ACCOUNT if self.var_auth.get() == self.AUTH_ACCOUNT_LABEL else U.AUTH_API
+        hint = U.friendly_error(tail + "\n" + error, auth) or error or "请查看日志中的错误信息"
         self._set_status("上传失败", DANGER)
         detail = "\n".join(self._log_tail[-6:]).strip()
         message = hint
