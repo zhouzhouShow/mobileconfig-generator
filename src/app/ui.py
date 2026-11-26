@@ -6,13 +6,20 @@ import base64
 import json
 import os
 import plistlib
+import queue
 import re
+import sys
+import tempfile
+import threading
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from . import profile as P
 from . import signing
+from . import update as UP
+from . import upload as U
 
 try:  # 拖拽支持：tkinterdnd2 不是标准库，缺失时程序仍能正常使用
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -28,8 +35,30 @@ APP_TITLE = "Apple 配置描述文件生成器"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SM = ("Microsoft YaHei UI", 9)
 FONT_MONO = ("Consolas", 9)
+FONT_BRAND = ("Microsoft YaHei UI", 13, "bold")
+FONT_TITLE = ("Microsoft YaHei UI", 15, "bold")
+FONT_SECTION = ("Microsoft YaHei UI", 10, "bold")
+FONT_EYEBROW = ("Microsoft YaHei UI", 8)
 
-BG = "#f5f6f8"
+# 配色：浅色纸面 + 单一强调蓝，XML 预览用深色代码区形成层次
+BG = "#F5F5F7"
+SURFACE = "#FFFFFF"
+SURFACE_ALT = "#F7F7F9"
+INK = "#1D1D1F"
+INK_SOFT = "#6E6E73"
+INK_MUTED = "#8E8E93"
+HAIRLINE = "#DCDCE1"
+ACCENT = "#0071E3"
+ACCENT_DARK = "#0058B0"
+ACCENT_SOFT = "#E9F2FD"
+SUCCESS = "#1D7A46"
+WARNING = "#9A5B00"
+DANGER = "#C0392B"
+CODE_BG = "#1C1C1F"
+CODE_FG = "#E4E4E8"
+CODE_KEY = "#7CC4FF"
+CODE_TAG = "#C792EA"
+CODE_ERR = "#FF7A7A"
 
 
 def app_data_dir() -> str:
@@ -115,6 +144,7 @@ class MainWindow(_TK_BASE):
         self.refresh_all()
         if initial:
             self.open_path(initial)
+        self.after(2500, self._auto_check_update)
 
     # ------------------------------------------------------------------ 拖拽
     def _setup_drop(self):
@@ -171,7 +201,7 @@ class MainWindow(_TK_BASE):
         if not self.confirm_discard():
             return "break"
         self.open_path(path)
-        self.status.configure(text=f"已加载 {os.path.basename(path)}", foreground="#137333")
+        self.status.configure(text=f"已加载 {os.path.basename(path)}", foreground=SUCCESS)
         return "copy"
 
     def open_path(self, path: str):
@@ -204,18 +234,125 @@ class MainWindow(_TK_BASE):
     def _init_style(self):
         style = ttk.Style(self)
         try:
-            style.theme_use("vista")
+            style.theme_use("clam")   # clam 才能完整控制颜色与边框
         except tk.TclError:
             pass
-        style.configure(".", font=FONT)
-        style.configure("TButton", padding=(10, 5))
-        style.configure("Tool.TButton", padding=(12, 6))
-        style.configure("TLabelframe.Label", font=FONT, foreground="#1f4e79")
-        style.configure("Treeview", font=FONT, rowheight=28)
-        style.configure("Head.TLabel", font=("Microsoft YaHei UI", 11, "bold"),
-                        foreground="#1f4e79")
-        style.configure("Help.TLabel", font=FONT_SM, foreground="#6b7076")
-        style.configure("Status.TLabel", font=FONT_SM, foreground="#3c4043")
+
+        style.configure(".", font=FONT, background=SURFACE, foreground=INK)
+        style.configure("TFrame", background=SURFACE)
+        style.configure("Page.TFrame", background=BG)
+        style.configure("TLabel", background=SURFACE, foreground=INK, font=FONT)
+        style.configure("Page.TLabel", background=BG, foreground=INK)
+        style.configure("Brand.TLabel", background=SURFACE, foreground=INK, font=FONT_BRAND)
+        style.configure("Head.TLabel", background=SURFACE, foreground=INK, font=FONT_TITLE)
+        style.configure("Sub.TLabel", background=SURFACE, foreground=INK_SOFT, font=FONT_SM)
+        style.configure("Eyebrow.TLabel", background=SURFACE, foreground=INK_MUTED,
+                        font=FONT_EYEBROW)
+        style.configure("Section.TLabel", background=SURFACE, foreground=INK,
+                        font=FONT_SECTION)
+        style.configure("Help.TLabel", background=SURFACE, foreground=INK_MUTED, font=FONT_SM)
+        style.configure("Status.TLabel", background=SURFACE, foreground=INK_SOFT, font=FONT_SM)
+        style.configure("Code.TLabel", background=BG, foreground=INK_SOFT, font=FONT_SM)
+
+        # 按钮：默认幽灵按钮（白底细边），主操作用实心强调色
+        # width=0 覆盖 clam 主题默认的 11 字符固定宽度，让按钮随文字自适应
+        style.configure("TButton", font=FONT, padding=(14, 6), background=SURFACE,
+                        foreground=INK, bordercolor="#C9C9CF", lightcolor="#C9C9CF",
+                        darkcolor="#C9C9CF", focuscolor=ACCENT, relief="flat",
+                        borderwidth=1, width=0)
+        style.map("TButton",
+                  background=[("pressed", "#E7E7EC"), ("active", "#F5F5F7")],
+                  bordercolor=[("focus", ACCENT)],
+                  foreground=[("disabled", INK_MUTED)])
+        style.configure("Ghost.TButton", font=FONT, padding=(14, 6), background=SURFACE,
+                        foreground=INK, bordercolor="#C9C9CF", lightcolor="#C9C9CF",
+                        darkcolor="#C9C9CF", relief="flat", borderwidth=1, width=0)
+        style.configure("Tool.TButton", font=FONT, padding=(14, 6), background=SURFACE,
+                        foreground=INK, bordercolor="#C9C9CF", lightcolor="#C9C9CF",
+                        darkcolor="#C9C9CF", relief="flat", borderwidth=1, width=0)
+        style.configure("Small.TButton", font=FONT_SM, padding=(9, 4), background=SURFACE,
+                        foreground=INK, bordercolor="#C9C9CF", lightcolor="#C9C9CF",
+                        darkcolor="#C9C9CF", relief="flat", borderwidth=1, width=0)
+        style.configure("Primary.TButton", font=("Microsoft YaHei UI", 10, "bold"),
+                        padding=(18, 7), background=ACCENT, foreground="#FFFFFF",
+                        bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                        relief="flat", borderwidth=1, width=0)
+        style.map("Primary.TButton",
+                  background=[("pressed", ACCENT_DARK), ("active", "#0077ED")],
+                  bordercolor=[("pressed", ACCENT_DARK), ("active", "#0077ED")],
+                  foreground=[("disabled", "#F2F2F5")])
+        for name in ("TMenubutton", "Ghost.TMenubutton"):
+            style.configure(name, font=FONT, padding=(14, 6), background=SURFACE,
+                            foreground=INK, bordercolor="#C9C9CF", lightcolor="#C9C9CF",
+                            darkcolor="#C9C9CF", relief="flat", borderwidth=1,
+                            arrowcolor=INK_SOFT, width=0)
+            style.map(name,
+                      background=[("pressed", "#E7E7EC"), ("active", "#F5F5F7")],
+                      arrowcolor=[("active", ACCENT)])
+
+        # 输入控件：浅灰内嵌底 + 聚焦描边
+        style.configure("TEntry", padding=(8, 6), fieldbackground=SURFACE_ALT,
+                        background=SURFACE_ALT, foreground=INK, bordercolor=HAIRLINE,
+                        lightcolor=HAIRLINE, darkcolor=HAIRLINE, insertcolor=INK)
+        style.map("TEntry",
+                  bordercolor=[("focus", ACCENT)],
+                  lightcolor=[("focus", ACCENT)],
+                  darkcolor=[("focus", ACCENT)],
+                  fieldbackground=[("readonly", SURFACE_ALT)],
+                  foreground=[("disabled", INK_MUTED)])
+        style.configure("TCombobox", padding=(8, 5), fieldbackground=SURFACE_ALT,
+                        background=SURFACE_ALT, foreground=INK, bordercolor=HAIRLINE,
+                        lightcolor=HAIRLINE, darkcolor=HAIRLINE, arrowcolor=INK_SOFT,
+                        selectbackground=SURFACE_ALT, selectforeground=INK)
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", SURFACE_ALT), ("disabled", SURFACE_ALT)],
+                  bordercolor=[("focus", ACCENT), ("active", "#B9B9C0")],
+                  arrowcolor=[("active", ACCENT)],
+                  foreground=[("disabled", INK_MUTED)])
+        self.option_add("*TCombobox*Listbox.background", SURFACE)
+        self.option_add("*TCombobox*Listbox.foreground", INK)
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT_SOFT)
+        self.option_add("*TCombobox*Listbox.selectForeground", ACCENT_DARK)
+        self.option_add("*TCombobox*Listbox.font", FONT)
+        style.configure("TSpinbox", padding=(8, 5), fieldbackground=SURFACE_ALT,
+                        background=SURFACE, foreground=INK, bordercolor=HAIRLINE,
+                        lightcolor=HAIRLINE, darkcolor=HAIRLINE, arrowcolor=INK_SOFT)
+        style.map("TSpinbox", bordercolor=[("focus", ACCENT)],
+                  arrowcolor=[("active", ACCENT)])
+
+        style.configure("TCheckbutton", background=SURFACE, foreground=INK, font=FONT,
+                        focuscolor=SURFACE, indicatorcolor=SURFACE)
+        style.map("TCheckbutton",
+                  background=[("active", SURFACE)],
+                  foreground=[("disabled", INK_MUTED)],
+                  indicatorcolor=[("selected", ACCENT), ("active", ACCENT_SOFT)])
+
+        style.configure("Treeview", font=FONT, rowheight=34, background=SURFACE,
+                        fieldbackground=SURFACE, foreground=INK, borderwidth=0,
+                        relief="flat")
+        style.configure("Treeview.Heading", background=SURFACE, foreground=INK_SOFT,
+                        font=FONT_SM, relief="flat", borderwidth=0)
+        style.map("Treeview",
+                  background=[("selected", ACCENT_SOFT)],
+                  foreground=[("selected", ACCENT_DARK)])
+
+        style.configure("TScrollbar", background="#C7C7CC", troughcolor=BG,
+                        bordercolor=BG, arrowcolor=INK_SOFT, relief="flat",
+                        arrowsize=12, gripcount=0, width=10)
+        style.map("TScrollbar", background=[("active", "#AEAEB2")])
+        style.configure("Dark.TScrollbar", background="#3A3A3F", troughcolor=CODE_BG,
+                        bordercolor=CODE_BG, arrowcolor="#8E8E93", relief="flat",
+                        arrowsize=12, gripcount=0, width=10)
+        style.map("Dark.TScrollbar", background=[("active", "#55555C")])
+        # 自定义滚动条需要显式继承布局，否则 Tk 会报 Layout ... not found
+        for orient in ("Vertical", "Horizontal"):
+            try:
+                style.layout(f"{orient}.Dark.TScrollbar",
+                             style.layout(f"{orient}.TScrollbar"))
+            except tk.TclError:
+                pass
+        style.configure("TSeparator", background=HAIRLINE)
+        style.configure("TPanedwindow", background=BG)
 
     def _bind_shortcuts(self):
         self.bind_all("<Control-n>", lambda e: self.new_profile())
@@ -246,6 +383,7 @@ class MainWindow(_TK_BASE):
 
         m_tool = tk.Menu(menubar, tearoff=0, font=FONT)
         m_tool.add_command(label="查看证书信息 / 备案指纹…", command=self.open_certinfo)
+        m_tool.add_command(label="上传 ipa 到 App Store Connect…", command=self.open_upload)
         m_tool.add_separator()
         m_tool.add_command(label="检测 OpenSSL 环境", command=self.detect_openssl)
         m_tool.add_command(label="设置 OpenSSL 路径…", command=self.pick_openssl)
@@ -253,6 +391,12 @@ class MainWindow(_TK_BASE):
 
         m_help = tk.Menu(menubar, tearoff=0, font=FONT)
         m_help.add_command(label="使用说明", command=self.show_help)
+        m_help.add_command(label="检查更新…", command=lambda: self.check_update(False))
+        self.var_auto_update = tk.BooleanVar(
+            value=bool(load_settings().get("check_update", True)))
+        m_help.add_checkbutton(label="启动时自动检查更新", variable=self.var_auto_update,
+                               command=self._toggle_auto_update)
+        m_help.add_separator()
         m_help.add_command(label="关于", command=self.show_about)
         menubar.add_cascade(label="帮助", menu=m_help)
 
@@ -260,96 +404,138 @@ class MainWindow(_TK_BASE):
 
     # ------------------------------------------------------------------ 工具栏
     def _build_toolbar(self):
-        bar = tk.Frame(self, bg=BG)
-        bar.pack(side="top", fill="x", padx=10, pady=(10, 4))
+        tk.Frame(self, bg=ACCENT, height=2).pack(side="top", fill="x")
 
-        ttk.Button(bar, text="新建", style="Tool.TButton",
-                   command=self.new_profile).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="打开工程", style="Tool.TButton",
-                   command=self.open_project).pack(side="left", padx=6)
-        ttk.Button(bar, text="保存工程", style="Tool.TButton",
-                   command=self.save_project).pack(side="left", padx=6)
-        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=10)
-        ttk.Button(bar, text="导入 .mobileconfig", style="Tool.TButton",
-                   command=self.import_mobileconfig).pack(side="left", padx=6)
-        ttk.Button(bar, text="导出 .mobileconfig", style="Tool.TButton",
-                   command=self.export_unsigned).pack(side="left", padx=6)
-        ttk.Button(bar, text="签名并导出", style="Tool.TButton",
-                   command=self.open_sign_dialog).pack(side="left", padx=6)
-        ttk.Button(bar, text="证书信息", style="Tool.TButton",
-                   command=self.open_certinfo).pack(side="left", padx=(6, 0))
+        bar = tk.Frame(self, bg=SURFACE)
+        bar.pack(side="top", fill="x")
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(side="top", fill="x")
 
-        self.openssl_label = ttk.Label(bar, text="", style="Help.TLabel")
+        # 品牌区
+        brand = tk.Frame(bar, bg=SURFACE)
+        brand.pack(fill="x", padx=18, pady=(14, 2))
+        tk.Label(brand, text="◈", bg=SURFACE, fg=ACCENT,
+                 font=("Microsoft YaHei UI", 15, "bold")).pack(side="left", padx=(0, 9))
+        name_box = tk.Frame(brand, bg=SURFACE)
+        name_box.pack(side="left")
+        tk.Label(name_box, text="描述文件生成器", bg=SURFACE, fg=INK,
+                 font=FONT_BRAND).pack(anchor="w")
+        tk.Label(name_box, text="Apple mobileconfig · 创建 · 签名 · 备案",
+                 bg=SURFACE, fg=INK_MUTED, font=FONT_SM).pack(anchor="w")
+
+        self.openssl_label = tk.Label(brand, text="", bg=SURFACE, fg=INK_SOFT,
+                                      font=FONT_SM, padx=10, pady=4)
         self.openssl_label.pack(side="right")
         self._update_openssl_label()
+
+        # 操作区
+        actions = tk.Frame(bar, bg=SURFACE)
+        actions.pack(fill="x", padx=18, pady=(8, 14))
+
+        def divider():
+            tk.Frame(actions, bg=HAIRLINE, width=1).pack(side="left", fill="y",
+                                                         padx=10, pady=1)
+
+        for label, cmd in (("新建", self.new_profile),
+                           ("打开工程", self.open_project),
+                           ("保存工程", self.save_project)):
+            ttk.Button(actions, text=label, style="Ghost.TButton",
+                       command=cmd).pack(side="left", padx=(0, 8))
+        divider()
+        for label, cmd in (("导入 .mobileconfig", self.import_mobileconfig),
+                           ("导出 .mobileconfig", self.export_unsigned),
+                           ("证书信息", self.open_certinfo),
+                           ("上传 ipa", self.open_upload)):
+            ttk.Button(actions, text=label, style="Ghost.TButton",
+                       command=cmd).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="签名并导出", style="Primary.TButton",
+                   command=self.open_sign_dialog).pack(side="right")
 
     def _update_openssl_label(self):
         path = load_settings().get("openssl_path", "")
         try:
             exe = signing.find_openssl(path)
             ver = signing.openssl_version(exe)
-            self.openssl_label.configure(
-                text="OpenSSL：已就绪" + (f"（{ver.split(' ')[1]}）" if ver else ""),
-                foreground="#137333")
+            text = "● OpenSSL 已就绪" + (f" · {ver.split(' ')[1]}" if ver else "")
+            self.openssl_label.configure(text=text, foreground=SUCCESS,
+                                         background="#EDF7F1")
         except signing.OpenSSLNotFound:
-            self.openssl_label.configure(text="OpenSSL：未找到（仍可导出未签名版本）",
-                                         foreground="#b06000")
+            self.openssl_label.configure(text="● OpenSSL 未找到 · 仍可导出未签名",
+                                         foreground=WARNING, background="#FFF6E8")
 
     # ------------------------------------------------------------------ 主体
     def _build_body(self):
         body = tk.Frame(self, bg=BG)
-        body.pack(side="top", fill="both", expand=True, padx=10, pady=4)
+        body.pack(side="top", fill="both", expand=True, padx=16, pady=14)
 
         outer = ttk.PanedWindow(body, orient="horizontal")
         outer.pack(fill="both", expand=True)
 
-        # 左：配置项列表
-        left = ttk.Frame(outer, width=250)
+        # 左：配置项列表（白卡片）
+        left = tk.Frame(outer, bg=SURFACE, highlightbackground=HAIRLINE,
+                        highlightthickness=1, bd=0, width=262)
         left.pack_propagate(False)
         outer.add(left, weight=0)
-        ttk.Label(left, text="配置项", style="Head.TLabel").pack(anchor="w", pady=(4, 6))
 
-        tree_box = ttk.Frame(left)
-        tree_box.pack(fill="both", expand=True)
+        left_head = tk.Frame(left, bg=SURFACE)
+        left_head.pack(fill="x", padx=14, pady=(14, 8))
+        tk.Label(left_head, text="配置项", bg=SURFACE, fg=INK,
+                 font=FONT_SECTION).pack(side="left")
+        self.tree_count = tk.Label(left_head, text="", bg=SURFACE, fg=INK_MUTED,
+                                   font=FONT_SM)
+        self.tree_count.pack(side="right")
+
+        tree_box = tk.Frame(left, bg=SURFACE)
+        tree_box.pack(fill="both", expand=True, padx=(6, 2))
         self.tree = ttk.Treeview(tree_box, show="tree", selectmode="browse")
         tsb = ttk.Scrollbar(tree_box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         tsb.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self.tree.tag_configure("global", foreground="#1f4e79")
+        self.tree.tag_configure("global", foreground=ACCENT_DARK)
+        self.tree.tag_configure("item", foreground=INK)
 
-        btns = ttk.Frame(left)
-        btns.pack(fill="x", pady=8)
+        btns = tk.Frame(left, bg=SURFACE)
+        btns.pack(fill="x", padx=10, pady=(6, 12))
 
-        self.add_btn = ttk.Menubutton(btns, text="＋ 添加配置项")
-        add_menu = tk.Menu(self.add_btn, tearoff=0, font=FONT)
+        self.add_btn = ttk.Menubutton(btns, text="＋ 添加配置项", style="Ghost.TMenubutton")
+        add_menu = tk.Menu(self.add_btn, tearoff=0, font=FONT, bg=SURFACE, fg=INK,
+                           activebackground=ACCENT_SOFT, activeforeground=ACCENT_DARK,
+                           bd=0)
         for spec in P.ADDABLE:
             add_menu.add_command(label=f"{spec.label}", command=lambda k=spec.key: self.add_payload(k))
         self.add_btn["menu"] = add_menu
-        self.add_btn.pack(side="left")
+        self.add_btn.pack(fill="x")
 
-        ttk.Button(btns, text="删除", width=6,
-                   command=self.delete_payload).pack(side="left", padx=4)
-        ttk.Button(btns, text="↑", width=3,
-                   command=lambda: self.move_payload(-1)).pack(side="left")
-        ttk.Button(btns, text="↓", width=3,
-                   command=lambda: self.move_payload(1)).pack(side="left", padx=2)
+        order_row = tk.Frame(btns, bg=SURFACE)
+        order_row.pack(fill="x", pady=(6, 0))
+        ttk.Button(order_row, text="删除", style="Small.TButton",
+                   command=self.delete_payload).pack(side="left")
+        ttk.Button(order_row, text="↑ 上移", style="Small.TButton",
+                   command=lambda: self.move_payload(-1)).pack(side="left", padx=(6, 0))
+        ttk.Button(order_row, text="↓ 下移", style="Small.TButton",
+                   command=lambda: self.move_payload(1)).pack(side="left", padx=(6, 0))
 
         # 右：表单 + 预览
         right = ttk.PanedWindow(outer, orient="horizontal")
         outer.add(right, weight=5)
 
-        form_wrap = ttk.Frame(right, width=580)
+        form_wrap = tk.Frame(right, bg=BG)
         right.add(form_wrap, weight=4)
-        ttk.Label(form_wrap, text="详细设置", style="Head.TLabel").pack(anchor="w", pady=(4, 4))
-        self.form_canvas = tk.Canvas(form_wrap, bg="white", highlightthickness=1,
-                                     highlightbackground="#dcdfe3", width=620)
+        form_head = tk.Frame(form_wrap, bg=BG)
+        form_head.pack(fill="x", padx=2, pady=(0, 6))
+        tk.Label(form_head, text="详细设置", bg=BG, fg=INK,
+                 font=FONT_SECTION).pack(side="left")
+        tk.Label(form_head, text="修改会实时反映到右侧 XML", bg=BG, fg=INK_MUTED,
+                 font=FONT_SM).pack(side="left", padx=(10, 0))
+
+        self.form_canvas = tk.Canvas(form_wrap, bg=SURFACE, highlightthickness=1,
+                                     highlightbackground=HAIRLINE, bd=0, width=620)
         fsb = ttk.Scrollbar(form_wrap, orient="vertical", command=self.form_canvas.yview)
         self.form_canvas.configure(yscrollcommand=fsb.set)
         self.form_canvas.pack(side="left", fill="both", expand=True)
         fsb.pack(side="right", fill="y")
-        self.form_body = tk.Frame(self.form_canvas, bg="white")
+        self.form_body = tk.Frame(self.form_canvas, bg=SURFACE)
         self._form_window = self.form_canvas.create_window((0, 0), window=self.form_body, anchor="nw")
         self.form_body.bind("<Configure>",
                             lambda e: self.form_canvas.configure(scrollregion=self.form_canvas.bbox("all")))
@@ -358,38 +544,46 @@ class MainWindow(_TK_BASE):
         self.form_canvas.bind("<Enter>", lambda e: self._bind_wheel(True))
         self.form_canvas.bind("<Leave>", lambda e: self._bind_wheel(False))
 
-        preview_wrap = ttk.Frame(right)
+        preview_wrap = tk.Frame(right, bg=BG)
         right.add(preview_wrap, weight=5)
-        head = ttk.Frame(preview_wrap)
-        head.pack(side="top", fill="x", pady=(4, 4))
-        ttk.Label(head, text="XML 预览", style="Head.TLabel").pack(side="left")
-        self.preview_info = ttk.Label(head, text="", style="Help.TLabel")
+        head = tk.Frame(preview_wrap, bg=BG)
+        head.pack(side="top", fill="x", padx=2, pady=(0, 6))
+        tk.Label(head, text="XML 预览", bg=BG, fg=INK,
+                 font=FONT_SECTION).pack(side="left")
+        self.preview_info = tk.Label(head, text="", bg=BG, fg=INK_MUTED, font=FONT_SM)
         self.preview_info.pack(side="right")
 
-        issues_box = ttk.LabelFrame(preview_wrap, text=" 检查结果 ")
-        issues_box.pack(side="bottom", fill="x", pady=(8, 4))
-        self.issues_text = tk.Text(issues_box, height=5, font=FONT_SM, relief="flat",
-                                   bg="#fbfbfc", padx=6, pady=4, wrap="word")
-        self.issues_text.pack(fill="x")
-        self.issues_text.tag_configure("error", foreground="#c5221f")
-        self.issues_text.tag_configure("warn", foreground="#b06000")
-        self.issues_text.tag_configure("ok", foreground="#137333")
+        issues_card = tk.Frame(preview_wrap, bg=SURFACE, highlightbackground=HAIRLINE,
+                               highlightthickness=1, bd=0)
+        issues_card.pack(side="bottom", fill="x", pady=(10, 0))
+        tk.Label(issues_card, text="检查结果", bg=SURFACE, fg=INK_MUTED,
+                 font=FONT_SM, anchor="w").pack(fill="x", padx=12, pady=(8, 2))
+        self.issues_text = tk.Text(issues_card, height=4, font=FONT_SM, relief="flat",
+                                   bg=SURFACE, fg=INK, padx=10, pady=2, wrap="word",
+                                   bd=0, cursor="arrow")
+        self.issues_text.pack(fill="x", padx=2, pady=(0, 8))
+        self.issues_text.tag_configure("error", foreground=DANGER)
+        self.issues_text.tag_configure("warn", foreground=WARNING)
+        self.issues_text.tag_configure("ok", foreground=SUCCESS)
         self.issues_text.configure(state="disabled")
 
-        pbody = ttk.Frame(preview_wrap)
+        pbody = tk.Frame(preview_wrap, bg=CODE_BG)
         pbody.pack(side="top", fill="both", expand=True)
-        self.preview = tk.Text(pbody, wrap="none", font=FONT_MONO, bg="#fbfbfc",
-                               foreground="#2b2f33", relief="flat", padx=8, pady=6,
-                               undo=False, width=44)
-        psb = ttk.Scrollbar(pbody, orient="vertical", command=self.preview.yview)
-        hsb = ttk.Scrollbar(pbody, orient="horizontal", command=self.preview.xview)
+        self.preview = tk.Text(pbody, wrap="none", font=FONT_MONO, bg=CODE_BG,
+                               foreground=CODE_FG, relief="flat", padx=12, pady=10,
+                               undo=False, width=44, bd=0, insertbackground=CODE_FG,
+                               selectbackground="#3A3A3F", selectforeground="#FFFFFF")
+        psb = ttk.Scrollbar(pbody, orient="vertical", command=self.preview.yview,
+                            style="Dark.TScrollbar")
+        hsb = ttk.Scrollbar(pbody, orient="horizontal", command=self.preview.xview,
+                            style="Dark.TScrollbar")
         self.preview.configure(yscrollcommand=psb.set, xscrollcommand=hsb.set)
         psb.pack(side="right", fill="y")
         hsb.pack(side="bottom", fill="x")
         self.preview.pack(side="left", fill="both", expand=True)
-        self.preview.tag_configure("key", foreground="#0b5cad")
-        self.preview.tag_configure("tag", foreground="#8250df")
-        self.preview.tag_configure("err", foreground="#c5221f")
+        self.preview.tag_configure("key", foreground=CODE_KEY)
+        self.preview.tag_configure("tag", foreground=CODE_TAG)
+        self.preview.tag_configure("err", foreground=CODE_ERR)
         self.preview.configure(state="disabled")
 
     def _bind_wheel(self, on: bool):
@@ -402,15 +596,23 @@ class MainWindow(_TK_BASE):
         self.form_canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def _build_status(self):
-        self.status = ttk.Label(self, text="就绪", style="Status.TLabel", anchor="w")
-        self.status.pack(side="bottom", fill="x", padx=12, pady=(0, 6))
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(side="bottom", fill="x")
+        bar = tk.Frame(self, bg=SURFACE)
+        bar.pack(side="bottom", fill="x")
+        self.status = tk.Label(bar, text="就绪", bg=SURFACE, fg=INK_SOFT,
+                               font=FONT_SM, anchor="w")
+        self.status.pack(side="left", padx=16, pady=7)
+        tk.Label(bar, text="Ctrl+S 保存 · Ctrl+Shift+S 签名", bg=SURFACE,
+                 fg=INK_MUTED, font=FONT_SM).pack(side="right", padx=16)
 
     # ------------------------------------------------------------------ 列表
     def refresh_tree(self, select: str = None):
         self.tree.delete(*self.tree.get_children())
-        self.tree.insert("", "end", iid="global", text="  ⚙  全局设置", tags=("global",))
+        self.tree.insert("", "end", iid="global", text="  ⚙   全局设置", tags=("global",))
         for p in self.profile.payloads:
-            self.tree.insert("", "end", iid=p.uid, text=f"  •  {p.summary()}")
+            self.tree.insert("", "end", iid=p.uid, text=f"  •   {p.summary()}", tags=("item",))
+        if getattr(self, "tree_count", None) is not None:
+            self.tree_count.configure(text=f"{len(self.profile.payloads)} 项")
         target = select or self.current
         if target != "global" and target not in {p.uid for p in self.profile.payloads}:
             target = "global"
@@ -480,8 +682,8 @@ class MainWindow(_TK_BASE):
         self.rows = []
         self.form_canvas.yview_moveto(0)
 
-        header = ttk.Frame(self.form_body)
-        header.pack(fill="x", padx=12, pady=(12, 4))
+        header = tk.Frame(self.form_body, bg=SURFACE)
+        header.pack(fill="x", padx=18, pady=(20, 2))
         if self.current == "global":
             title = "全局设置"
             sub = "这些字段会写入描述文件顶层，作用于整份配置"
@@ -493,9 +695,11 @@ class MainWindow(_TK_BASE):
             title = p.type_label()
             sub = "PayloadType：" + (p.spec.payload_type if p.spec else
                                      (p.raw or {}).get("PayloadType", ""))
-        ttk.Label(header, text=title, font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
-        ttk.Label(header, text=sub, style="Help.TLabel").pack(anchor="w")
-        ttk.Separator(self.form_body).pack(fill="x", padx=12, pady=(6, 2))
+        tk.Label(header, text=title, bg=SURFACE, fg=INK,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(header, text=sub, bg=SURFACE, fg=INK_SOFT,
+                 font=FONT_SM).pack(anchor="w", pady=(3, 0))
+        tk.Frame(self.form_body, bg=HAIRLINE, height=1).pack(fill="x", padx=18, pady=(12, 0))
 
         if self.current == "global":
             self.render_global()
@@ -564,7 +768,9 @@ class MainWindow(_TK_BASE):
             ttk.Label(box, text="该配置项类型本工具暂不支持编辑，导出时会原样写回，不会丢失。",
                       style="Help.TLabel", wraplength=520).pack(anchor="w")
             raw_xml = plistlib.dumps(p.raw or {}, fmt=plistlib.FMT_XML, sort_keys=False).decode("utf-8")
-            txt = tk.Text(box, height=18, font=FONT_MONO, wrap="char")
+            txt = tk.Text(box, height=18, font=FONT_MONO, wrap="char", bg=CODE_BG,
+                          fg=CODE_FG, relief="flat", bd=0, padx=10, pady=8,
+                          insertbackground=CODE_FG)
             txt.insert("1.0", raw_xml)
             txt.configure(state="disabled")
             txt.pack(fill="both", expand=True, pady=(8, 0))
@@ -596,6 +802,8 @@ class MainWindow(_TK_BASE):
         uuid_box.grid(row=0, column=1, sticky="ew")
         var = tk.StringVar(value=p.uuid)
         entry = ttk.Entry(uuid_box, textvariable=var, state="readonly")
+        # 没有 trace 的 StringVar 会被垃圾回收，导致显示为空，这里保留引用
+        entry._tk_var = var
         entry.pack(side="left", fill="x", expand=True)
         ttk.Button(uuid_box, text="重新生成", width=9,
                    command=lambda: self.regen_payload_uuid(p)).pack(side="left", padx=(6, 0))
@@ -615,10 +823,16 @@ class MainWindow(_TK_BASE):
 
     # -- 通用控件 ---------------------------------------------------------
     def _group(self, title: str):
-        frame = ttk.LabelFrame(self.form_body, text=" " + title + " ")
-        frame.pack(fill="x", padx=10, pady=(8, 4))
-        holder = ttk.Frame(frame)
-        holder.pack(fill="x", pady=4)
+        card = tk.Frame(self.form_body, bg=SURFACE, highlightbackground=HAIRLINE,
+                        highlightthickness=1, bd=0)
+        card.pack(fill="x", padx=18, pady=(14, 0))
+        cap = tk.Frame(card, bg=SURFACE)
+        cap.pack(fill="x", padx=14, pady=(12, 2))
+        tk.Frame(cap, bg=ACCENT, width=16, height=2).pack(side="left", padx=(0, 8))
+        tk.Label(cap, text=title, bg=SURFACE, fg=INK,
+                 font=FONT_SECTION).pack(side="left")
+        holder = tk.Frame(card, bg=SURFACE)
+        holder.pack(fill="x", padx=10, pady=(2, 12))
         holder.columnconfigure(0, minsize=150)
         holder.columnconfigure(1, weight=1)
         return holder
@@ -626,7 +840,7 @@ class MainWindow(_TK_BASE):
     def _row(self, parent):
         idx = parent.grid_size()[1]
         outer = ttk.Frame(parent)
-        outer.grid(row=idx, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        outer.grid(row=idx, column=0, columnspan=2, sticky="ew", padx=6, pady=5)
         outer.columnconfigure(0, minsize=150)
         outer.columnconfigure(1, weight=1, minsize=220)
         return outer
@@ -666,7 +880,10 @@ class MainWindow(_TK_BASE):
         ttk.Label(outer, text=label, anchor="ne").grid(row=0, column=0, sticky="ne", padx=(0, 8))
         box = ttk.Frame(outer)
         box.grid(row=0, column=1, sticky="ew")
-        txt = tk.Text(box, height=4, font=FONT, wrap="word", relief="solid", borderwidth=1)
+        txt = tk.Text(box, height=4, font=FONT, wrap="word", relief="flat", bd=0,
+                      bg=SURFACE_ALT, fg=INK, highlightthickness=1,
+                      highlightbackground=HAIRLINE, highlightcolor=ACCENT,
+                      insertbackground=INK, padx=8, pady=6)
         txt.insert("1.0", str(self._get(target, key) or ""))
         txt.pack(fill="x")
 
@@ -847,7 +1064,7 @@ class MainWindow(_TK_BASE):
             any_visible = any(w.winfo_manager() == "grid" for w in widgets)
             shown = bool(frame.winfo_manager())
             if any_visible and not shown:
-                frame.pack(fill="x", padx=10, pady=(8, 4))
+                frame.pack(fill="x", padx=18, pady=(14, 0))
             elif not any_visible and shown:
                 frame.pack_forget()
 
@@ -885,14 +1102,14 @@ class MainWindow(_TK_BASE):
         if errors:
             self.status.configure(
                 text=f"共 {n} 个配置项 · 错误 {len(errors)} 个 · 警告 {len(warns)} 个 —— 建议修正后再导出",
-                foreground="#c5221f")
+                foreground=DANGER)
         elif warns:
             self.status.configure(
                 text=f"共 {n} 个配置项 · 警告 {len(warns)} 个 —— 可以导出",
-                foreground="#b06000")
+                foreground=WARNING)
         else:
             self.status.configure(text=f"共 {n} 个配置项 · 检查通过，可以导出",
-                                  foreground="#137333")
+                                  foreground=SUCCESS)
 
     def _set_preview(self, text: str):
         t = self.preview
@@ -984,7 +1201,7 @@ class MainWindow(_TK_BASE):
             return False
         self.dirty = False
         self.title(APP_TITLE + f" - {os.path.basename(path)}")
-        self.status.configure(text=f"工程已保存到 {path}", foreground="#137333")
+        self.status.configure(text=f"工程已保存到 {path}", foreground=SUCCESS)
         return True
 
     def import_mobileconfig(self):
@@ -1048,7 +1265,7 @@ class MainWindow(_TK_BASE):
             f"已导出未签名描述文件：\n{path}\n\n"
             "安装方式：用 Safari 或“文件”App 打开该文件，系统会提示安装。",
             parent=self)
-        self.status.configure(text=f"已导出 {path}", foreground="#137333")
+        self.status.configure(text=f"已导出 {path}", foreground=SUCCESS)
 
     # ------------------------------------------------------------------ 签名
     def open_sign_dialog(self):
@@ -1056,6 +1273,54 @@ class MainWindow(_TK_BASE):
 
     def open_certinfo(self):
         CertInfoDialog(self)
+
+    def open_upload(self):
+        UploadDialog(self)
+
+    # ------------------------------------------------------------------ 更新
+    def _toggle_auto_update(self):
+        data = load_settings()
+        data["check_update"] = bool(self.var_auto_update.get())
+        save_settings(data)
+
+    def _auto_check_update(self):
+        if self.var_auto_update.get():
+            self.check_update(True)
+
+    def check_update(self, silent: bool):
+        if getattr(self, "_update_checking", False):
+            return
+        self._update_checking = True
+        self._update_result = None
+
+        def work():
+            try:
+                self._update_result = (UP.check(__version__), "", silent)
+            except UP.UpdateError as exc:
+                self._update_result = (None, str(exc), silent)
+
+        threading.Thread(target=work, daemon=True).start()
+        self._poll_update()
+
+    def _poll_update(self):
+        if self._update_result is None:
+            self.after(200, self._poll_update)
+            return
+        info, error, silent = self._update_result
+        self._update_result = None
+        self._update_checking = False
+        self._show_update_result(info, error, silent)
+
+    def _show_update_result(self, info, error, silent):
+        if info:
+            UpdateDialog(self, info)
+            return
+        if silent:
+            return
+        if error:
+            messagebox.showwarning("检查更新", f"检查更新失败：\n{error}", parent=self)
+        else:
+            messagebox.showinfo("检查更新", f"当前已是最新版本（{__version__}）。", parent=self)
 
     def detect_openssl(self):
         preferred = load_settings().get("openssl_path", "")
@@ -1104,11 +1369,11 @@ class SignDialog(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("签名并导出")
-        self.geometry("640x560")
+        self.geometry("660x556")
         self.resizable(False, False)
         self.transient(app)
         self.grab_set()
-        self.configure(bg=BG)
+        self.configure(bg=SURFACE)
 
         cfg = load_settings()
         self.var_cert = tk.StringVar()
@@ -1118,11 +1383,15 @@ class SignDialog(tk.Toplevel):
         self.var_openssl = tk.StringVar(value=cfg.get("openssl_path", ""))
         self.var_out = tk.StringVar(value="")
 
-        pad = {"padx": 14, "pady": 4}
-        ttk.Label(self, text="使用 OpenSSL 对描述文件做 S/MIME 签名（SHA-256，DER 输出）",
-                  style="Head.TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        pad = {"padx": 18, "pady": 5}
+        tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+        ttk.Label(self, text="签名并导出",
+                  font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 2))
+        ttk.Label(self, text="使用 OpenSSL 做 S/MIME 签名（SHA-256，DER 输出）",
+                  style="Sub.TLabel").pack(anchor="w", padx=18, pady=(0, 2))
         ttk.Label(self, text="iOS 只在描述文件带有效签名时才显示“已验证”。",
-                  style="Help.TLabel").pack(anchor="w", padx=14, pady=(0, 8))
+                  style="Help.TLabel").pack(anchor="w", padx=18, pady=(0, 10))
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(fill="x", padx=18, pady=(0, 8))
 
         self._file_row("签名证书 *", self.var_cert,
                        [("证书/P12", "*.pem;*.crt;*.cer;*.p12;*.pfx"), ("所有文件", "*.*")])
@@ -1154,10 +1423,13 @@ class SignDialog(tk.Toplevel):
                   style="Help.TLabel").pack(anchor="w", padx=14)
 
         btns = ttk.Frame(self)
-        btns.pack(fill="x", side="bottom", pady=14, padx=14)
-        ttk.Button(btns, text="开始签名并导出", command=self.do_sign).pack(side="right")
-        ttk.Button(btns, text="取消", command=self.destroy).pack(side="right", padx=8)
-        ttk.Button(btns, text="仅导出未签名", command=self.export_plain).pack(side="left")
+        btns.pack(fill="x", side="bottom", pady=16, padx=18)
+        ttk.Button(btns, text="开始签名并导出", style="Primary.TButton",
+                   command=self.do_sign).pack(side="right")
+        ttk.Button(btns, text="取消", style="Ghost.TButton",
+                   command=self.destroy).pack(side="right", padx=8)
+        ttk.Button(btns, text="仅导出未签名", style="Ghost.TButton",
+                   command=self.export_plain).pack(side="left")
 
     def _file_row(self, label, var, filetypes, save_key=""):
         row = ttk.Frame(self)
@@ -1181,12 +1453,12 @@ class SignDialog(tk.Toplevel):
         try:
             exe = signing.find_openssl(self.var_openssl.get())
             ver = signing.openssl_version(exe)
-            self.openssl_status.configure(text=f"✓ {exe}  {ver}", foreground="#137333")
+            self.openssl_status.configure(text=f"✓ {exe}  {ver}", foreground=SUCCESS)
             return exe
         except signing.OpenSSLNotFound:
             self.openssl_status.configure(
                 text="✗ 未找到 OpenSSL：可以点“仅导出未签名”，或先安装 OpenSSL / 手动指定路径",
-                foreground="#c5221f")
+                foreground=DANGER)
             return None
 
     def _choose_out(self):
@@ -1225,7 +1497,7 @@ class SignDialog(tk.Toplevel):
         try:
             with open(tmp_src, "wb") as fh:
                 fh.write(P.dump_xml(self.app.profile))
-            self.app.status.configure(text="正在签名…", foreground="#1f4e79")
+            self.app.status.configure(text="正在签名…", foreground=ACCENT_DARK)
             self.update_idletasks()
             result = signing.sign_file(
                 exe, tmp_src, out,
@@ -1251,7 +1523,7 @@ class SignDialog(tk.Toplevel):
             f"已生成签名后的描述文件：\n{out}\n\n"
             f"大小：{human_size(result.get('size', 0))}（DER 编码）\n{verify_text}",
             parent=self)
-        self.app.status.configure(text=f"已签名导出 {out}", foreground="#137333")
+        self.app.status.configure(text=f"已签名导出 {out}", foreground=SUCCESS)
         self.destroy()
 
 
@@ -1263,53 +1535,66 @@ class CertInfoDialog(tk.Toplevel):
         self.app = app
         self.results = []
         self.title("证书信息 / 备案指纹")
-        self.geometry("780x660")
+        self.geometry("800x680")
         self.minsize(700, 560)
         self.transient(app)
-        self.configure(bg=BG)
+        self.configure(bg=SURFACE)
 
         self.var_path = tk.StringVar()
         self.var_pwd = tk.StringVar()
 
-        ttk.Label(self, text="选择 Android（.keystore / .jks）或 Apple（.p12 / .pfx / .cer）证书",
-                  style="Head.TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+        ttk.Label(self, text="证书信息 / 备案指纹",
+                  font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 2))
         ttk.Label(self,
-                  text="读取后可获得备案常用的 MD5、SHA-1、SHA-256 指纹与公钥；"
-                       "Android 一般填 SHA-1 / MD5 指纹 + 公钥，iOS 一般填公钥 + Bundle ID。",
-                  style="Help.TLabel", wraplength=740, justify="left").pack(anchor="w", padx=14, pady=(0, 8))
+                  text="选择 Android（.keystore / .jks）或 Apple（.p12 / .pfx / .cer）证书，"
+                       "读取备案常用的 MD5、SHA-1、SHA-256 指纹与公钥。",
+                  style="Sub.TLabel", wraplength=750, justify="left").pack(
+                      anchor="w", padx=18, pady=(0, 4))
+        ttk.Label(self,
+                  text="Android 一般填 SHA-1 / MD5 指纹 + 公钥；iOS 一般填公钥 + Bundle ID。",
+                  style="Help.TLabel", wraplength=750, justify="left").pack(
+                      anchor="w", padx=18, pady=(0, 10))
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(fill="x", padx=18, pady=(0, 6))
 
         row = ttk.Frame(self)
-        row.pack(fill="x", padx=14, pady=4)
+        row.pack(fill="x", padx=18, pady=5)
         ttk.Label(row, text="证书文件", width=10, anchor="e").pack(side="left", padx=(0, 8))
         ttk.Entry(row, textvariable=self.var_path).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="浏览…", width=7, command=self._browse).pack(side="left", padx=(6, 0))
+        ttk.Button(row, text="浏览…", width=7, style="Ghost.TButton",
+                   command=self._browse).pack(side="left", padx=(6, 0))
 
         row = ttk.Frame(self)
-        row.pack(fill="x", padx=14, pady=4)
+        row.pack(fill="x", padx=18, pady=5)
         ttk.Label(row, text="密码", width=10, anchor="e").pack(side="left", padx=(0, 8))
         ttk.Entry(row, textvariable=self.var_pwd, show="*").pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="读取证书信息", command=self._load).pack(side="left", padx=(6, 0))
+        ttk.Button(row, text="读取证书信息", style="Primary.TButton",
+                   command=self._load).pack(side="left", padx=(8, 0))
 
         self.status = ttk.Label(self, text="", style="Help.TLabel")
-        self.status.pack(anchor="w", padx=14, pady=(2, 4))
+        self.status.pack(anchor="w", padx=18, pady=(2, 6))
 
-        box = ttk.Frame(self)
-        box.pack(fill="both", expand=True, padx=14)
-        self.text = tk.Text(box, wrap="word", font=FONT_MONO, bg="#fbfbfc",
-                            relief="flat", padx=8, pady=6)
+        box = tk.Frame(self, bg=SURFACE, highlightbackground=HAIRLINE,
+                       highlightthickness=1, bd=0)
+        box.pack(fill="both", expand=True, padx=18)
+        self.text = tk.Text(box, wrap="word", font=FONT_MONO, bg=SURFACE_ALT,
+                            fg=INK, relief="flat", bd=0, padx=10, pady=8,
+                            insertbackground=INK, selectbackground=ACCENT_SOFT,
+                            selectforeground=ACCENT_DARK)
         sb = ttk.Scrollbar(box, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=sb.set)
         self.text.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
         btns = ttk.Frame(self)
-        btns.pack(fill="x", padx=14, pady=10)
+        btns.pack(fill="x", padx=18, pady=12)
         for label, key in [("复制全文", "all"), ("复制 SHA-1", "sha1"),
                            ("复制 MD5", "md5"), ("复制 SHA-256", "sha256"),
                            ("复制公钥", "public_key_b64")]:
-            ttk.Button(btns, text=label,
+            ttk.Button(btns, text=label, style="Small.TButton",
                        command=lambda k=key: self._copy(k)).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="关闭", style="Ghost.TButton",
+                   command=self.destroy).pack(side="right")
 
     def _browse(self):
         path = filedialog.askopenfilename(
@@ -1324,18 +1609,18 @@ class CertInfoDialog(tk.Toplevel):
         if not path:
             messagebox.showwarning(APP_TITLE, "请先选择证书文件。", parent=self)
             return
-        self.status.configure(text="正在读取…", foreground="#1f4e79")
+        self.status.configure(text="正在读取…", foreground=ACCENT_DARK)
         self.update_idletasks()
         try:
             from . import certinfo
             results, note = certinfo.read_certificates(path, self.var_pwd.get())
         except Exception as exc:  # noqa: BLE001
-            self.status.configure(text="读取失败", foreground="#c5221f")
+            self.status.configure(text="读取失败", foreground=DANGER)
             messagebox.showerror(APP_TITLE, f"读取证书失败：\n{exc}", parent=self)
             return
         self.results = results
         tip = f"（{note}）" if note else ""
-        self.status.configure(text=f"已读取 {len(results)} 张证书{tip}", foreground="#137333")
+        self.status.configure(text=f"已读取 {len(results)} 张证书{tip}", foreground=SUCCESS)
         self._show(results)
 
     def _show(self, results):
@@ -1375,7 +1660,7 @@ class CertInfoDialog(tk.Toplevel):
             return
         self.clipboard_clear()
         self.clipboard_append(payload)
-        self.status.configure(text="已复制到剪贴板", foreground="#137333")
+        self.status.configure(text="已复制到剪贴板", foreground=SUCCESS)
 
 
 class HelpDialog(tk.Toplevel):
@@ -1410,23 +1695,732 @@ class HelpDialog(tk.Toplevel):
         "带 PayloadRemovalDisallowed=true 的描述文件只能通过抹掉设备移除。\n\n"
         "六、工程文件\n"
         "“保存工程”把当前内容存成 .json（含证书二进制内容），"
-        "下次“打开工程”即可继续编辑。"
+        "下次“打开工程”即可继续编辑。\n"
+        "\n"
+        "七、上传 ipa 到 App Store Connect\n"
+        "1. 工具栏点“上传 ipa”，首次使用先点“下载”安装 Apple 官方 Windows 版\n"
+        "   Transporter 4.3（免费，自带 Java）；已装在别的盘时点“选择目录…”指定。\n"
+        "2. 认证有两种方式：\n"
+        "   · API Key（推荐）：App Store Connect → 用户和访问 → 集成 → 生成密钥，\n"
+        "     记下 Key ID、Issuer ID，并下载 .p8（只能下载一次）。\n"
+        "   · Apple ID 账号密码：填 Apple ID 和应用专用密码（在 appleid.apple.com\n"
+        "     生成，不是登录密码）；填好后可点“获取团队”，登录并直接选团队。\n"
+        "3. 选择 ipa，填好认证信息，点“开始上传”。\n"
+        "4. 上传只是把包交给 Apple，构建处理完成后还需在 App Store Connect\n"
+        "   里填写版本信息并提交审核。\n"
+        "5. 若自动上传报错，可点“复制命令”到命令提示符手动执行，查看完整日志。"
     )
 
     def __init__(self, app):
         super().__init__(app)
         self.title("使用说明")
-        self.geometry("760x620")
+        self.geometry("780x640")
         self.transient(app)
-        frame = ttk.Frame(self)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
-        txt = tk.Text(frame, wrap="word", font=FONT, relief="flat", padx=10, pady=8)
+        self.configure(bg=SURFACE)
+        tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+        tk.Label(self, text="使用说明", bg=SURFACE, fg=INK,
+                 font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=18, pady=(14, 8))
+        frame = tk.Frame(self, bg=SURFACE, highlightbackground=HAIRLINE,
+                         highlightthickness=1, bd=0)
+        frame.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+        txt = tk.Text(frame, wrap="word", font=FONT, relief="flat", bd=0,
+                      bg=SURFACE_ALT, fg=INK, padx=14, pady=12,
+                      insertbackground=INK, spacing1=2, spacing3=4)
         txt.insert("1.0", self.TEXT)
         txt.configure(state="disabled")
         sb = ttk.Scrollbar(frame, orient="vertical", command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         txt.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+
+class UploadDialog(tk.Toplevel):
+    """通过 Apple 官方 iTMSTransporter 把 ipa 上传到 App Store Connect。"""
+
+    KIND_TEAM = "团队密钥（AuthKey）"
+    KIND_SELF = "个人密钥（ApiKey）"
+    AUTH_API_LABEL = "API Key（推荐）"
+    AUTH_ACCOUNT_LABEL = "Apple ID 账号密码"
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("上传 ipa 到 App Store Connect")
+        self.geometry("820x790")
+        self.minsize(760, 660)
+        self.transient(app)
+        self.grab_set()
+        self.configure(bg=SURFACE)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._queue = queue.Queue()
+        self._team_queue = queue.Queue()
+        self._teams_loading = False
+        self._cancel = threading.Event()
+        self._worker = None
+        self._log_tail = []
+
+        saved = load_settings()
+        self.var_ipa = tk.StringVar()
+        self.var_key_id = tk.StringVar(value=saved.get("asc_key_id", ""))
+        self.var_issuer = tk.StringVar(value=saved.get("asc_issuer", ""))
+        self.var_key = tk.StringVar(value=saved.get("asc_key_path", ""))
+        self.var_exe = tk.StringVar(value=saved.get("itms_path", ""))
+        self.var_kind = tk.StringVar(
+            value=self.KIND_SELF if saved.get("asc_key_type") == "individual" else self.KIND_TEAM)
+        self.var_auth = tk.StringVar(
+            value=self.AUTH_ACCOUNT_LABEL
+            if saved.get("asc_auth", U.AUTH_ACCOUNT) == U.AUTH_ACCOUNT
+            else self.AUTH_API_LABEL)
+        self.var_apple_id = tk.StringVar(value=saved.get("asc_apple_id", ""))
+        saved_password = ""
+        try:
+            if saved.get("asc_password"):
+                saved_password = base64.b64decode(
+                    saved["asc_password"].encode("ascii")).decode("utf-8")
+        except Exception:  # noqa: BLE001
+            saved_password = ""
+        self.var_password = tk.StringVar(value=saved_password)
+        self.var_team = tk.StringVar(value=saved.get("asc_team_id", ""))
+
+        tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+        ttk.Label(self, text="上传 ipa 到 App Store Connect",
+                  font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 2))
+        ttk.Label(self, text="使用 Apple 官方免费的 Windows 版 iTMSTransporter 上传，不需要 Mac。"
+                             "支持 API Key 或 Apple ID 登录。",
+                  style="Sub.TLabel", wraplength=780).pack(anchor="w", padx=18)
+        link_row = tk.Frame(self, bg=SURFACE)
+        link_row.pack(anchor="w", padx=18, pady=(4, 8))
+        self._link(link_row, "获取 API Key ↗",
+                   "https://appstoreconnect.apple.com/access/integrations/api").pack(side="left")
+        self._link(link_row, "生成应用专用密码 ↗",
+                   "https://appleid.apple.com/account/manage").pack(side="left", padx=(14, 0))
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(fill="x", padx=18, pady=(0, 8))
+
+        form = tk.Frame(self, bg=SURFACE)
+        form.pack(fill="x", padx=18)
+        form.columnconfigure(1, weight=1)
+
+        def row_label(parent, text, row):
+            tk.Label(parent, text=text, bg=SURFACE, fg=INK_SOFT, font=FONT_SM,
+                     anchor="e").grid(row=row, column=0, sticky="e", padx=(0, 10), pady=5)
+
+        def browse_box(parent, row, var, kinds, title):
+            box = tk.Frame(parent, bg=SURFACE)
+            box.grid(row=row, column=1, sticky="ew", pady=5)
+            ttk.Entry(box, textvariable=var).pack(side="left", fill="x", expand=True)
+
+            def pick():
+                path = filedialog.askopenfilename(title=title, filetypes=kinds)
+                if path:
+                    var.set(path)
+                    if var is self.var_ipa:
+                        self._load_ipa(path)
+
+            ttk.Button(box, text="浏览…", width=6, style="Ghost.TButton",
+                       command=pick).pack(side="left", padx=(6, 0))
+            return box
+
+        row_label(form, "IPA 文件", 0)
+        browse_box(form, 0, self.var_ipa, [("iOS 应用包", "*.ipa"), ("所有文件", "*.*")],
+                   "选择 ipa")
+        self.lbl_info = tk.Label(form, text="", bg=SURFACE, fg=ACCENT_DARK,
+                                 font=FONT_SM, anchor="w")
+        self.lbl_info.grid(row=1, column=1, sticky="w")
+
+        row_label(form, "认证方式", 2)
+        auth_box = ttk.Combobox(form, textvariable=self.var_auth, state="readonly",
+                                values=[self.AUTH_API_LABEL, self.AUTH_ACCOUNT_LABEL])
+        auth_box.grid(row=2, column=1, sticky="w", pady=5)
+        auth_box.bind("<<ComboboxSelected>>", self._on_auth_change)
+
+        # ---- API Key 面板 ----
+        self.frm_api = tk.Frame(form, bg=SURFACE)
+        self.frm_api.grid(row=3, column=0, columnspan=2, sticky="ew")
+        self.frm_api.columnconfigure(1, weight=1)
+        row_label(self.frm_api, "密钥类型", 0)
+        ttk.Combobox(self.frm_api, textvariable=self.var_kind, state="readonly",
+                     values=[self.KIND_TEAM, self.KIND_SELF]).grid(
+                         row=0, column=1, sticky="w", pady=5)
+        row_label(self.frm_api, "Key ID", 1)
+        ttk.Entry(self.frm_api, textvariable=self.var_key_id).grid(
+            row=1, column=1, sticky="ew", pady=5)
+        row_label(self.frm_api, "Issuer ID", 2)
+        ttk.Entry(self.frm_api, textvariable=self.var_issuer).grid(
+            row=2, column=1, sticky="ew", pady=5)
+        row_label(self.frm_api, "私钥 .p8", 3)
+        browse_box(self.frm_api, 3, self.var_key, [("API 私钥", "*.p8"), ("所有文件", "*.*")],
+                   "选择 AuthKey_*.p8")
+
+        # ---- Apple ID 面板 ----
+        self.frm_account = tk.Frame(form, bg=SURFACE)
+        self.frm_account.grid(row=4, column=0, columnspan=2, sticky="ew")
+        self.frm_account.columnconfigure(1, weight=1)
+        row_label(self.frm_account, "Apple ID", 0)
+        ttk.Entry(self.frm_account, textvariable=self.var_apple_id).grid(
+            row=0, column=1, sticky="ew", pady=5)
+        row_label(self.frm_account, "应用专用密码", 1)
+        pwd_box = tk.Frame(self.frm_account, bg=SURFACE)
+        pwd_box.grid(row=1, column=1, sticky="ew", pady=5)
+        ttk.Entry(pwd_box, textvariable=self.var_password, show="*").pack(
+            side="left", fill="x", expand=True)
+        pwd_link = tk.Label(pwd_box, text="如何获取？", bg=SURFACE, fg=ACCENT,
+                            font=FONT_SM, cursor="hand2")
+        pwd_link.pack(side="left", padx=(8, 0))
+        pwd_link.bind("<Button-1>", lambda e: AppPasswordDialog(self))
+        row_label(self.frm_account, "团队（可选）", 2)
+        team_box = tk.Frame(self.frm_account, bg=SURFACE)
+        team_box.grid(row=2, column=1, sticky="ew", pady=5)
+        self.cmb_team = ttk.Combobox(team_box, textvariable=self.var_team, values=[])
+        self.cmb_team.pack(side="left", fill="x", expand=True)
+        self.cmb_team.bind("<<ComboboxSelected>>", self._on_team_select)
+        self.btn_teams = ttk.Button(team_box, text="获取团队", width=8,
+                                    style="Ghost.TButton", command=self._load_teams)
+        self.btn_teams.pack(side="left", padx=(6, 0))
+
+        row_label(form, "iTMSTransporter", 5)
+        exe_box = tk.Frame(form, bg=SURFACE)
+        exe_box.grid(row=5, column=1, sticky="ew", pady=5)
+        ttk.Entry(exe_box, textvariable=self.var_exe).pack(
+            side="left", fill="x", expand=True)
+        ttk.Button(exe_box, text="自动检测", width=8, style="Ghost.TButton",
+                   command=self._auto_detect).pack(side="left", padx=(6, 0))
+        ttk.Button(exe_box, text="选择目录…", width=9, style="Ghost.TButton",
+                   command=self._pick_itms).pack(side="left", padx=(6, 0))
+        ttk.Button(exe_box, text="下载", width=5, style="Ghost.TButton",
+                   command=lambda: webbrowser.open(U.DOWNLOAD_URL)).pack(side="left", padx=(6, 0))
+
+        tk.Label(self, text="API Key 模式：私钥按 AuthKey_<KeyID>.p8 复制到临时目录，上传结束自动删除。"
+                            "Apple ID 模式：需使用应用专用密码（不是登录密码），密码仅在本次上传时传给"
+                            " iTMSTransporter，不会被保存。",
+                 bg=SURFACE, fg=INK_MUTED, font=FONT_SM, justify="left",
+                 wraplength=760).pack(anchor="w", padx=18, pady=(4, 8))
+
+        log_head = tk.Frame(self, bg=SURFACE)
+        log_head.pack(fill="x", padx=18)
+        tk.Label(log_head, text="上传日志", bg=SURFACE, fg=INK_SOFT,
+                 font=FONT_SM).pack(side="left")
+        self.lbl_status = tk.Label(log_head, text="", bg=SURFACE, fg=INK_MUTED, font=FONT_SM)
+        self.lbl_status.pack(side="right")
+
+        log_wrap = tk.Frame(self, bg=CODE_BG)
+        log_wrap.pack(fill="both", expand=True, padx=18, pady=(4, 0))
+        self.log_text = tk.Text(log_wrap, height=10, font=FONT_MONO, bg=CODE_BG,
+                                fg=CODE_FG, relief="flat", bd=0, padx=10, pady=8,
+                                insertbackground=CODE_FG, wrap="none")
+        lsb = ttk.Scrollbar(log_wrap, orient="vertical", command=self.log_text.yview,
+                            style="Dark.TScrollbar")
+        self.log_text.configure(yscrollcommand=lsb.set)
+        self.log_text.pack(side="left", fill="both", expand=True)
+        lsb.pack(side="right", fill="y")
+        self.log_text.configure(state="disabled")
+
+        btns = tk.Frame(self, bg=SURFACE)
+        btns.pack(fill="x", padx=18, pady=12)
+        self.btn_start = ttk.Button(btns, text="开始上传", style="Primary.TButton",
+                                    command=self._on_start)
+        self.btn_start.pack(side="right")
+        ttk.Button(btns, text="关闭", style="Ghost.TButton",
+                   command=self._on_close).pack(side="right", padx=8)
+        ttk.Button(btns, text="打开 App Store Connect", style="Ghost.TButton",
+                   command=lambda: webbrowser.open(
+                       "https://appstoreconnect.apple.com/apps")).pack(side="left")
+        ttk.Button(btns, text="复制命令", style="Ghost.TButton",
+                   command=self._copy_command).pack(side="left", padx=(8, 0))
+
+        self._on_auth_change()
+        self.after(120, self._auto_detect)
+
+    # ------------------------------------------------------------------ 组件
+    def _link(self, parent, text, url):
+        lbl = tk.Label(parent, text=text, bg=SURFACE, fg=ACCENT, font=FONT_SM,
+                       cursor="hand2")
+        lbl.bind("<Button-1>", lambda e: webbrowser.open(url))
+        return lbl
+
+    def _set_status(self, text, color=INK_MUTED):
+        self.lbl_status.configure(text=text, fg=color)
+
+    def _log(self, line):
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", line + "\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+        self._log_tail.append(line)
+        if len(self._log_tail) > 80:
+            del self._log_tail[:-80]
+
+    # ------------------------------------------------------------------ 检测
+    def _auto_detect(self):
+        try:
+            exe = U.find_itms(self.var_exe.get())
+        except U.UploadError:
+            self._set_status("未检测到，点“选择目录…”或“下载”", WARNING)
+            return
+        self.var_exe.set(exe)
+        self._set_status("已找到 iTMSTransporter", SUCCESS)
+
+    def _pick_itms(self):
+        folder = filedialog.askdirectory(title="选择 iTMSTransporter 安装目录")
+        if not folder:
+            return
+        try:
+            self.var_exe.set(U.find_itms(folder))
+            self._set_status("已找到 iTMSTransporter", SUCCESS)
+        except U.UploadError:
+            messagebox.showwarning(
+                "未找到工具",
+                "该目录下没有 iTMSTransporter.cmd，请选择 Apple Transporter 的安装目录。",
+                parent=self)
+
+    def _on_auth_change(self, *_):
+        if self.var_auth.get() == self.AUTH_ACCOUNT_LABEL:
+            self.frm_api.grid_remove()
+            self.frm_account.grid()
+        else:
+            self.frm_account.grid_remove()
+            self.frm_api.grid()
+
+    def _persist_form(self, exe: str, password: str = ""):
+        kind = "individual" if self.var_kind.get() == self.KIND_SELF else "team"
+        account = self.var_auth.get() == self.AUTH_ACCOUNT_LABEL
+        data = load_settings()
+        data.update({
+            "itms_path": exe,
+            "asc_key_id": self.var_key_id.get().strip(),
+            "asc_issuer": self.var_issuer.get().strip(),
+            "asc_key_path": self.var_key.get().strip(),
+            "asc_key_type": kind,
+            "asc_auth": U.AUTH_ACCOUNT if account else U.AUTH_API,
+            "asc_apple_id": self.var_apple_id.get().strip(),
+            "asc_team_id": self.var_team.get().strip(),
+        })
+        if account:
+            data["asc_password"] = (base64.b64encode(password.encode("utf-8")).decode("ascii")
+                                    if password else "")
+        save_settings(data)
+
+    def _on_team_select(self, *_):
+        match = re.search(r"(\d{6,12})", self.var_team.get())
+        if match:
+            self.var_team.set(match.group(1))
+
+    def _load_teams(self):
+        if self._teams_loading:
+            return
+        apple_id = self.var_apple_id.get().strip()
+        password = self.var_password.get()
+        if not apple_id or not password:
+            messagebox.showwarning("获取团队", "请先填写 Apple ID 和应用专用密码", parent=self)
+            return
+        try:
+            exe = U.find_itms(self.var_exe.get().strip())
+        except U.UploadError as exc:
+            messagebox.showwarning("获取团队", str(exc), parent=self)
+            return
+        self.var_exe.set(exe)
+        self._persist_form(exe, password)
+        self._teams_loading = True
+        self.btn_teams.configure(text="查询中…", state="disabled")
+        self._set_status("正在登录 Apple 并获取团队列表…", ACCENT_DARK)
+
+        def work():
+            try:
+                teams, lines, code = U.list_providers(
+                    exe, apple_id, password,
+                    lambda s: self._team_queue.put(("log", s)))
+                self._team_queue.put(("teams", teams))
+            except Exception as exc:  # noqa: BLE001
+                self._team_queue.put(("err", f"{type(exc).__name__}: {exc}"))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll_teams)
+
+    def _poll_teams(self):
+        while True:
+            try:
+                kind, payload = self._team_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "log":
+                self._log(payload)
+            elif kind == "err":
+                self._finish_teams(None, str(payload))
+            else:
+                self._finish_teams(payload, "")
+        if self._teams_loading:
+            self.after(150, self._poll_teams)
+
+    def _finish_teams(self, teams, error):
+        self._teams_loading = False
+        self.btn_teams.configure(text="获取团队", state="normal")
+        if error:
+            self._set_status("获取团队失败", DANGER)
+            hint = U.friendly_error(error) or error
+            messagebox.showerror("获取团队", hint, parent=self)
+            return
+        if not teams:
+            self._set_status("未解析到团队，请手动填写团队 ID", WARNING)
+            messagebox.showinfo(
+                "获取团队",
+                "登录成功，但没能从输出中解析出团队。\n"
+                "请直接在“团队”里填写团队 ID（App Store Connect 网页地址中那串 10 位字符）。",
+                parent=self)
+            return
+        values = [f"{name} ({tid})" if name else tid for tid, name in teams]
+        self.cmb_team.configure(values=values)
+        self.cmb_team.set(values[0])
+        self.var_team.set(teams[0][0])
+        self._persist_form(self.var_exe.get().strip(), self.var_password.get())
+        self._set_status(f"已获取 {len(teams)} 个团队", SUCCESS)
+
+    def _load_ipa(self, path):
+        try:
+            info = U.ipa_info(path)
+        except U.UploadError as exc:
+            self.lbl_info.configure(text=str(exc), fg=DANGER)
+            return
+        text = (f"{info['name']}  ·  {info['bundle_id']}  ·  "
+                f"版本 {info['version']} ({info['build']})  ·  iOS {info['min_os']}+  ·  "
+                f"{human_size(info['size'])}")
+        self.lbl_info.configure(text=text, fg=ACCENT_DARK)
+
+    # ------------------------------------------------------------------ 上传
+    def _copy_command(self):
+        ipa = self.var_ipa.get().strip()
+        exe = self.var_exe.get().strip()
+        if not ipa or not exe:
+            messagebox.showinfo("复制命令", "请先选择 ipa 和 iTMSTransporter", parent=self)
+            return
+        kind = "individual" if self.var_kind.get() == self.KIND_SELF else "team"
+        prefix = ""
+        if self.var_auth.get() == self.AUTH_ACCOUNT_LABEL:
+            apple_id = self.var_apple_id.get().strip()
+            if not apple_id:
+                messagebox.showinfo("复制命令", "请先填写 Apple ID", parent=self)
+                return
+            cmd = U.manual_command(exe, ipa, auth=U.AUTH_ACCOUNT, apple_id=apple_id,
+                                   team_id=self.var_team.get().strip())
+        else:
+            key = self.var_key.get().strip()
+            key_id = self.var_key_id.get().strip()
+            if not (key and key_id):
+                messagebox.showinfo("复制命令", "请先选择私钥并填写 Key ID", parent=self)
+                return
+            try:
+                workspace = U.persist_key_dir(key, key_id, kind)
+            except (U.UploadError, OSError) as exc:
+                messagebox.showerror("复制命令", str(exc), parent=self)
+                return
+            prefix = f'cd /d "{workspace}"\r\n'
+            cmd = U.manual_command(exe, ipa, key_id, self.var_issuer.get().strip(), kind)
+        self.clipboard_clear()
+        self.clipboard_append(f"{prefix}{cmd}\r\n")
+        self._set_status("命令已复制，粘贴到命令提示符即可手动上传", SUCCESS)
+
+    def _on_start(self):
+        if self._worker is not None:
+            self._cancel.set()
+            self.btn_start.configure(text="正在停止…")
+            return
+
+        ipa = self.var_ipa.get().strip()
+        if not ipa or not os.path.isfile(ipa):
+            messagebox.showwarning("缺少 ipa", "请选择要上传的 .ipa 文件", parent=self)
+            return
+        try:
+            exe = U.find_itms(self.var_exe.get().strip())
+        except U.UploadError:
+            messagebox.showwarning(
+                "缺少工具",
+                "未找到 iTMSTransporter。\n可点“选择目录…”指定安装位置"
+                "（例如 D:\\softwave\\itms），或点“下载”安装官方 Windows 版。",
+                parent=self)
+            return
+        self.var_exe.set(exe)
+
+        account = self.var_auth.get() == self.AUTH_ACCOUNT_LABEL
+        key = key_id = issuer = apple_id = password = team = ""
+        kind = "individual" if self.var_kind.get() == self.KIND_SELF else "team"
+        if account:
+            apple_id = self.var_apple_id.get().strip()
+            password = self.var_password.get()
+            team = self.var_team.get().strip()
+            if not apple_id or not password:
+                messagebox.showwarning(
+                    "缺少账号信息",
+                    "请填写 Apple ID 和应用专用密码（在 appleid.apple.com 生成，不是登录密码）。",
+                    parent=self)
+                return
+        else:
+            key = self.var_key.get().strip()
+            key_id = self.var_key_id.get().strip()
+            issuer = self.var_issuer.get().strip()
+            if not key or not os.path.isfile(key):
+                messagebox.showwarning("缺少私钥",
+                                       "请选择 App Store Connect API 的 .p8 私钥文件",
+                                       parent=self)
+                return
+            if not key_id or not issuer:
+                messagebox.showwarning("缺少参数", "请填写 Key ID 和 Issuer ID", parent=self)
+                return
+
+        self._persist_form(exe, password)
+
+        self._cancel.clear()
+        self._log_tail = []
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+        self._set_status("正在启动 iTMSTransporter…", ACCENT_DARK)
+        self.btn_start.configure(text="取消上传")
+
+        def work():
+            try:
+                code = U.run_upload(
+                    exe, ipa, key_id, issuer, key, kind,
+                    lambda s: self._queue.put(("log", s)),
+                    self._cancel.is_set,
+                    auth=U.AUTH_ACCOUNT if account else U.AUTH_API,
+                    apple_id=apple_id, password=password, team_id=team)
+                self._queue.put(("done", code))
+            except U.UploadError as exc:
+                self._queue.put(("error", str(exc)))
+            except Exception as exc:  # noqa: BLE001
+                self._queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+        self._worker = threading.Thread(target=work, daemon=True)
+        self._worker.start()
+        self.after(100, self._poll)
+
+    def _poll(self):
+        while True:
+            try:
+                kind, payload = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "log":
+                self._log(payload)
+            elif kind == "error":
+                self._finish(False, payload)
+            else:
+                self._finish(payload == 0, "")
+        if self._worker is not None and self._worker.is_alive():
+            self.after(120, self._poll)
+
+    def _finish(self, ok, error):
+        self._worker = None
+        self.btn_start.configure(text="开始上传")
+        if self._cancel.is_set():
+            self._set_status("已取消上传", WARNING)
+            return
+        if ok:
+            self._set_status("上传成功", SUCCESS)
+            messagebox.showinfo(
+                "上传成功",
+                "ipa 已提交给 App Store Connect。\n"
+                "处理通常需要几分钟，处理完成后可在 TestFlight 或版本页看到构建。",
+                parent=self)
+            return
+        tail = "\n".join(self._log_tail[-8:])
+        hint = U.friendly_error(tail + "\n" + error) or error or "请查看日志中的错误信息"
+        self._set_status("上传失败", DANGER)
+        messagebox.showerror("上传失败", hint, parent=self)
+
+    def _on_close(self):
+        if self._worker is not None:
+            if not messagebox.askyesno("正在上传", "确定要停止并关闭吗？", parent=self):
+                return
+            self._cancel.set()
+        self.destroy()
+
+
+class AppPasswordDialog(tk.Toplevel):
+    """说明如何生成 App 专用密码。"""
+
+    STEPS = (
+        "1. 浏览器打开 appleid.apple.com，登录你 Mac 上登录 Transporter 的开发者账号。\n\n"
+        "2. 左侧点「登录与安全」（旧版叫「安全」）。\n\n"
+        "3. 找到「应用专用密码」，点「生成应用专用密码」或「+」。\n\n"
+        "4. 输入一个名称，例如 Transporter Windows，点「创建」。\n\n"
+        "5. 复制生成的密码（形如 abcd-efgh-ijkl-mnop），粘贴到本窗口。\n\n"
+        "说明：\n"
+        "· 该密码只显示一次，关闭页面后无法再查看，只能重新生成。\n"
+        "· 它不是 Apple ID 登录密码；泄漏时可在同一页面撤销，不影响账号本身。\n"
+        "· Mac 版 Transporter 收到的短信验证码只对那次登录有效，不能填在这里。\n"
+        "· 若页面上找不到「应用专用密码」入口，说明账号未开启双重认证，直接填登录密码即可。"
+    )
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("如何获取应用专用密码")
+        self.geometry("600x480")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.configure(bg=SURFACE)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+        tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+        ttk.Label(self, text="如何获取应用专用密码",
+                  font=("Microsoft YaHei UI", 13, "bold")).pack(
+                      anchor="w", padx=18, pady=(14, 2))
+        ttk.Label(self, text="Windows 命令行工具不支持短信验证码，需要用专用密码代替。",
+                  style="Sub.TLabel", wraplength=560).pack(anchor="w", padx=18)
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(fill="x", padx=18, pady=8)
+
+        tk.Label(self, text=self.STEPS, bg=SURFACE, fg=INK, font=FONT_SM,
+                 justify="left", anchor="nw", wraplength=560).pack(
+                     fill="both", expand=True, padx=18, pady=(0, 8))
+
+        btns = tk.Frame(self, bg=SURFACE)
+        btns.pack(fill="x", padx=18, pady=12)
+        ttk.Button(btns, text="打开 appleid.apple.com", style="Primary.TButton",
+                   command=lambda: webbrowser.open(
+                       "https://appleid.apple.com/account/manage")).pack(side="right")
+        ttk.Button(btns, text="知道了", style="Ghost.TButton",
+                   command=self._close).pack(side="right", padx=8)
+
+    def _close(self):
+        self.destroy()
+        try:
+            self.parent.grab_set()
+        except tk.TclError:
+            pass
+
+
+class UpdateDialog(tk.Toplevel):
+    """发现新版本：查看更新说明、下载并替换当前程序。"""
+
+    def __init__(self, app, info: dict):
+        super().__init__(app)
+        self.app = app
+        self.info = info
+        self._q = queue.Queue()
+        self.title("发现新版本")
+        self.geometry("660x660")
+        self.minsize(600, 620)
+        self.transient(app)
+        self.grab_set()
+        self.configure(bg=SURFACE)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+        tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+        ttk.Label(self, text=f"发现新版本 v{info['version']}",
+                  font=("Microsoft YaHei UI", 14, "bold")).pack(
+                      anchor="w", padx=18, pady=(16, 2))
+        ttk.Label(self, text=f"当前版本 v{__version__}，更新来自 GitHub Releases。",
+                  style="Sub.TLabel").pack(anchor="w", padx=18)
+        tk.Frame(self, bg=HAIRLINE, height=1).pack(fill="x", padx=18, pady=10)
+
+        tk.Label(self, text="更新说明", bg=SURFACE, fg=INK_SOFT,
+                 font=FONT_SM).pack(anchor="w", padx=18)
+        notes_wrap = tk.Frame(self, bg=SURFACE_ALT)
+        notes_wrap.pack(fill="both", expand=True, padx=18, pady=(4, 10))
+        notes = tk.Text(notes_wrap, font=FONT_SM, bg=SURFACE_ALT, fg=INK, relief="flat",
+                        bd=0, padx=10, pady=8, wrap="word")
+        nbar = ttk.Scrollbar(notes_wrap, orient="vertical", command=notes.yview)
+        notes.configure(yscrollcommand=nbar.set)
+        notes.pack(side="left", fill="both", expand=True)
+        nbar.pack(side="right", fill="y")
+        notes.insert("1.0", info.get("notes") or "（该版本没有填写更新说明）")
+        notes.configure(state="disabled")
+
+        self.pb = ttk.Progressbar(self, mode="determinate", maximum=100)
+        self.lbl_status = tk.Label(self, text="", bg=SURFACE, fg=INK_MUTED, font=FONT_SM)
+        self.lbl_status.pack(anchor="w", padx=18)
+
+        btns = tk.Frame(self, bg=SURFACE)
+        btns.pack(fill="x", padx=18, pady=12)
+        self.btn_install = ttk.Button(btns, text="立即更新", style="Primary.TButton",
+                                      command=self._install)
+        self.btn_install.pack(side="right")
+        ttk.Button(btns, text="稍后", style="Ghost.TButton",
+                   command=self._close).pack(side="right", padx=8)
+        ttk.Button(btns, text="打开发布页", style="Ghost.TButton",
+                   command=lambda: webbrowser.open(info["page"])).pack(side="left")
+
+    def _close(self):
+        self.destroy()
+        try:
+            self.app.grab_set()
+        except tk.TclError:
+            pass
+
+    def _set_status(self, text, color=INK_MUTED):
+        self.lbl_status.configure(text=text, fg=color)
+
+    def _install(self):
+        info = self.info
+        if not info.get("asset_url"):
+            webbrowser.open(info["page"])
+            return
+        if not UP.can_self_update():
+            messagebox.showinfo(
+                "无法自动更新",
+                "当前以源码方式运行，不能自动替换程序。\n请到发布页下载新版 exe。",
+                parent=self)
+            webbrowser.open(info["page"])
+            return
+
+        self.btn_install.configure(state="disabled", text="下载中…")
+        self.pb.pack(fill="x", padx=18, pady=(2, 6))
+        self._set_status("正在下载更新…", ACCENT_DARK)
+        dest = os.path.join(tempfile.gettempdir(),
+                            info.get("asset_name") or "AppleProfileTool_update.exe")
+
+        def work():
+            try:
+                UP.download(info["asset_url"], dest,
+                            lambda pct: self._q.put(("pct", pct)))
+            except UP.UpdateError as exc:
+                self._q.put(("err", str(exc)))
+            else:
+                self._q.put(("done", dest))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll_download)
+
+    def _poll_download(self):
+        try:
+            while True:
+                kind, payload = self._q.get_nowait()
+                if kind == "pct":
+                    self._on_progress(payload)
+                elif kind == "err":
+                    self._download_failed(payload)
+                else:
+                    self._download_done(payload)
+        except queue.Empty:
+            pass
+        if self.btn_install.cget("state") == "disabled":
+            self.after(150, self._poll_download)
+
+    def _on_progress(self, pct):
+        if pct < 0:
+            self._set_status("正在下载更新…", ACCENT_DARK)
+            return
+        self.pb["value"] = pct
+        self._set_status(f"正在下载更新… {pct}%", ACCENT_DARK)
+
+    def _download_failed(self, message):
+        self.pb.pack_forget()
+        self.btn_install.configure(state="normal", text="立即更新")
+        self._set_status("下载失败", DANGER)
+        messagebox.showerror("更新失败", message, parent=self)
+
+    def _download_done(self, path):
+        self.pb["value"] = 100
+        self._set_status("下载完成，正在替换并重启…", SUCCESS)
+        try:
+            UP.apply_update(path)
+        except UP.UpdateError as exc:
+            self.btn_install.configure(state="normal", text="立即更新")
+            self._set_status("无法自动替换", DANGER)
+            messagebox.showerror("更新失败", str(exc), parent=self)
+            return
+        self.app.after(600, self.app.destroy)
 
 
 def run():
